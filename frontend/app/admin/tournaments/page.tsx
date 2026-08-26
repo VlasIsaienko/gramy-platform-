@@ -26,7 +26,12 @@ const CATEGORIES = [
   { value: "mixed", label: "Микст" },
 ];
 
-const today = new Date().toISOString().split("T")[0];
+function getTodayLocal(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+const today = getTodayLocal();
 
 export default function TournamentsPage() {
   const [tournaments, setTournaments] = useState<Tournament[]>([]);
@@ -55,7 +60,7 @@ export default function TournamentsPage() {
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!name.trim() || !date) return;
-    if (date < today) { setError("Нельзя создать турнир задним числом."); return; }
+    if (date < today) { setError("Дата турнира не может быть в прошлом. Выберите сегодняшнюю дату или более позднюю."); return; }
     setSaving(true);
     setError(null);
     const { error } = await supabase.from("tournaments").insert([{

@@ -29,7 +29,7 @@ create table players (
 create table tournaments (
   id uuid primary key default gen_random_uuid(),
   name text not null,
-  date date not null,
+  date date not null check (date >= current_date),
   club_id uuid references clubs(id),
   format text not null check (format in ('olympic','round_robin','groups','mexicano','americano')),
   category text not null check (category in ('singles','doubles','mixed')),
