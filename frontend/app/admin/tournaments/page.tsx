@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -135,6 +136,9 @@ export default function TournamentsPage() {
                 <span className={"text-xs px-2 py-1 rounded-full " + (t.status === "active" ? "bg-green-100 text-green-700" : t.status === "finished" ? "bg-gray-100 text-gray-600" : "bg-yellow-100 text-yellow-700")}>
                   {statusLabel[t.status] || t.status}
                 </span>
+                <Link href={`/admin/tournaments/${t.id}`} className="text-sm text-court hover:text-shuttle transition font-medium">
+                  Открыть →
+                </Link>
                 <button onClick={() => handleDelete(t.id)} className="text-sm text-slateGray hover:text-shuttle transition">Удалить</button>
               </div>
             </div>

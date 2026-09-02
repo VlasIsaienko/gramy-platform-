@@ -52,7 +52,8 @@ create table registrations (
   tournament_id uuid references tournaments(id) on delete cascade,
   category_id uuid references categories(id) on delete cascade,
   player_id uuid references players(id),
-  created_at timestamp with time zone default now()
+  created_at timestamp with time zone default now(),
+  unique (category_id, player_id)
 );
 
 -- Команды (1 игрок для одиночек, 2 игрока для пар/микста)
