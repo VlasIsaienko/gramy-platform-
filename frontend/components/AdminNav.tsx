@@ -1,4 +1,8 @@
+"use client";
+
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { supabase } from "@/lib/supabaseClient";
 
 const links = [
   { href: "/admin", label: "Обзор" },
@@ -8,13 +12,21 @@ const links = [
 ];
 
 export default function AdminNav() {
+  const router = useRouter();
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+    router.push("/login");
+    router.refresh();
+  }
+
   return (
     <nav className="w-full border-b border-black/10 bg-white">
       <div className="max-w-5xl mx-auto flex items-center justify-between px-6 py-4">
         <Link href="/" className="font-display font-bold text-court text-xl">
           graMY <span className="text-shuttle">/ admin</span>
         </Link>
-        <div className="flex gap-6">
+        <div className="flex items-center gap-6">
           {links.map((l) => (
             <Link
               key={l.href}
@@ -24,6 +36,12 @@ export default function AdminNav() {
               {l.label}
             </Link>
           ))}
+          <button
+            onClick={handleLogout}
+            className="text-sm text-slateGray hover:text-shuttle transition"
+          >
+            Выйти
+          </button>
         </div>
       </div>
     </nav>
