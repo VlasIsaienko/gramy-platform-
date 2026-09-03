@@ -41,10 +41,19 @@ interface Match {
   id: string;
   category_id: string;
   round: number;
+  group_number: number | null;
   team_a_id: string;
   team_b_id: string;
   status: string;
 }
+
+const FORMAT_LABELS: Record<TournamentFormat, string> = {
+  olympic: "Olympic",
+  round_robin: "Round Robin",
+  groups: "Groups",
+  mexicano: "Mexicano",
+  americano: "Americano",
+};
 
 const MATCH_CATEGORIES = [
   { value: "singles", label: "Одиночный" },
@@ -81,7 +90,7 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
       supabase.from("registrations").select("id, category_id, player_id").eq("tournament_id", tournamentId),
       supabase.from("players").select("id, full_name").order("full_name"),
       supabase.from("teams").select("id, category_id, player_id_1, player_id_2").eq("tournament_id", tournamentId),
-      supabase.from("matches").select("id, category_id, round, team_a_id, team_b_id, status").eq("tournament_id", tournamentId).order("round"),
+      supabase.from("matches").select("id, category_id, round, group_number, team_a_id, team_b_id, status").eq("tournament_id", tournamentId).order("round"),
     ]);
 
     if (tournamentRes.error) setError("Не удалось загрузить турнир: " + tournamentRes.error.message);
@@ -187,24 +196,27 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
       (data || []).forEach((t) => teamIdByPlayer.set(t.player_id_1, t.id));
     }
 
-    let rounds;
+    let pools;
     try {
-      rounds = generateSchedule(tournament.format, categoryPlayerIds);
+      pools = generateSchedule(tournament.format, categoryPlayerIds);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Не удалось сгенерировать сетку.");
       setGeneratingCategoryId(null);
       return;
     }
 
-    const matchRows = rounds.flatMap((pairs, idx) =>
-      pairs.map(([a, b]) => ({
-        tournament_id: tournamentId,
-        category_id: category.id,
-        round: idx + 1,
-        team_a_id: teamIdByPlayer.get(a)!,
-        team_b_id: teamIdByPlayer.get(b)!,
-        status: "pending",
-      }))
+    const matchRows = pools.flatMap((pool) =>
+      pool.rounds.flatMap((pairs, idx) =>
+        pairs.map(([a, b]) => ({
+          tournament_id: tournamentId,
+          category_id: category.id,
+          round: idx + 1,
+          group_number: pool.groupNumber,
+          team_a_id: teamIdByPlayer.get(a)!,
+          team_b_id: teamIdByPlayer.get(b)!,
+          status: "pending",
+        }))
+      )
     );
 
     const { error } = await supabase.from("matches").insert(matchRows);
@@ -280,13 +292,13 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
               : [];
 
             const categoryMatches = matches.filter((m) => m.category_id === category.id);
-            const roundsMap = new Map<number, Match[]>();
+            const groupsMap = new Map<number | null, Match[]>();
             categoryMatches.forEach((m) => {
-              if (!roundsMap.has(m.round)) roundsMap.set(m.round, []);
-              roundsMap.get(m.round)!.push(m);
+              if (!groupsMap.has(m.group_number)) groupsMap.set(m.group_number, []);
+              groupsMap.get(m.group_number)!.push(m);
             });
-            const matchesByRound = Array.from(roundsMap.entries()).sort((a, b) => a[0] - b[0]);
-            const isLocked = matchesByRound.length > 0;
+            const matchesByGroup = Array.from(groupsMap.entries()).sort((a, b) => (a[0] ?? 0) - (b[0] ?? 0));
+            const isLocked = categoryMatches.length > 0;
 
             return (
               <div key={category.id} className="bg-white rounded-xl shadow-sm p-6">
@@ -353,24 +365,42 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                   {isLocked ? (
                     <div>
                       <div className="flex items-center justify-between mb-3">
-                        <h3 className="text-sm font-semibold text-ink">Сетка (Round Robin)</h3>
+                        <h3 className="text-sm font-semibold text-ink">Сетка ({FORMAT_LABELS[tournament.format]})</h3>
                         <button onClick={() => handleDeleteBracket(category)} className="text-xs text-shuttle hover:text-shuttle/70 transition">Удалить сетку</button>
                       </div>
-                      <div className="space-y-4">
-                        {matchesByRound.map(([round, roundMatches]) => (
-                          <div key={round}>
-                            <p className="text-xs font-medium text-slateGray mb-1.5">Раунд {round}</p>
-                            <div className="space-y-1.5">
-                              {roundMatches.map((m) => (
-                                <div key={m.id} className="flex items-center justify-between text-sm bg-courtLine/60 rounded-lg px-3 py-2">
-                                  <span className="text-ink">{teamLabel(m.team_a_id)}</span>
-                                  <span className="text-slateGray text-xs">vs</span>
-                                  <span className="text-ink">{teamLabel(m.team_b_id)}</span>
-                                </div>
-                              ))}
+                      <div className="space-y-5">
+                        {matchesByGroup.map(([groupNumber, groupMatches]) => {
+                          const roundsMap = new Map<number, Match[]>();
+                          groupMatches.forEach((m) => {
+                            if (!roundsMap.has(m.round)) roundsMap.set(m.round, []);
+                            roundsMap.get(m.round)!.push(m);
+                          });
+                          const roundsForGroup = Array.from(roundsMap.entries()).sort((a, b) => a[0] - b[0]);
+
+                          return (
+                            <div key={groupNumber ?? "single"}>
+                              {groupNumber !== null && (
+                                <p className="text-sm font-semibold text-court mb-2">Группа {groupNumber}</p>
+                              )}
+                              <div className="space-y-4">
+                                {roundsForGroup.map(([round, roundMatches]) => (
+                                  <div key={round}>
+                                    <p className="text-xs font-medium text-slateGray mb-1.5">Раунд {round}</p>
+                                    <div className="space-y-1.5">
+                                      {roundMatches.map((m) => (
+                                        <div key={m.id} className="flex items-center justify-between text-sm bg-courtLine/60 rounded-lg px-3 py-2">
+                                          <span className="text-ink">{teamLabel(m.team_a_id)}</span>
+                                          <span className="text-slateGray text-xs">vs</span>
+                                          <span className="text-ink">{teamLabel(m.team_b_id)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   ) : categoryRegistrations.length >= 2 ? (

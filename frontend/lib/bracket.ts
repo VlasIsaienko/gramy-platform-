@@ -39,15 +39,55 @@ export function generateRoundRobinRounds<T>(participants: T[]): Round<T>[] {
 export type TournamentFormat = "olympic" | "round_robin" | "groups" | "mexicano" | "americano";
 
 /**
- * Диспетчер расписания по формату турнира. Сейчас реализован только
- * round_robin. Groups (round robin внутри каждой группы) и
- * Mexicano/Americano (свой подбор пар по раундам) добавятся сюда
- * отдельными ветками, переиспользуя generateRoundRobinRounds где уместно.
+ * Один "пул" участников со своим расписанием. Для round_robin — единственный
+ * пул со всеми участниками (groupNumber = null). Для groups — по одному пулу
+ * на группу (groupNumber = 1, 2, 3...), внутри каждого свой mini round robin.
  */
-export function generateSchedule<T>(format: TournamentFormat, participants: T[]): Round<T>[] {
+export interface Pool<T> {
+  groupNumber: number | null;
+  participants: T[];
+  rounds: Round<T>[];
+}
+
+/**
+ * Делит участников на группы фиксированного целевого размера, балансируя
+ * последнюю группу так, чтобы не оставалось "сиротской" группы из 1 человека
+ * (например, 10 участников при targetSize=4 → группы 4/3/3, а не 4/4/2).
+ */
+export function splitIntoGroups<T>(participants: T[], targetSize = 4): T[][] {
+  const n = participants.length;
+  if (n === 0) return [];
+
+  const numGroups = Math.max(1, Math.ceil(n / targetSize));
+  const base = Math.floor(n / numGroups);
+  const remainder = n % numGroups;
+
+  const groups: T[][] = [];
+  let idx = 0;
+  for (let g = 0; g < numGroups; g++) {
+    const size = base + (g < remainder ? 1 : 0);
+    groups.push(participants.slice(idx, idx + size));
+    idx += size;
+  }
+  return groups;
+}
+
+/**
+ * Диспетчер расписания по формату турнира. Round robin и groups реализованы
+ * (groups переиспользует generateRoundRobinRounds внутри каждой группы).
+ * Mexicano/Americano — свой подбор пар по раундам — добавятся сюда отдельной
+ * веткой позже.
+ */
+export function generateSchedule<T>(format: TournamentFormat, participants: T[]): Pool<T>[] {
   switch (format) {
     case "round_robin":
-      return generateRoundRobinRounds(participants);
+      return [{ groupNumber: null, participants, rounds: generateRoundRobinRounds(participants) }];
+    case "groups":
+      return splitIntoGroups(participants).map((group, i) => ({
+        groupNumber: i + 1,
+        participants: group,
+        rounds: generateRoundRobinRounds(group),
+      }));
     default:
       throw new Error(`Формат "${format}" пока не поддерживается генератором сетки.`);
   }

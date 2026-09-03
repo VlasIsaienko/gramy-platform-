@@ -71,6 +71,7 @@ create table matches (
   tournament_id uuid references tournaments(id) on delete cascade,
   category_id uuid references categories(id) on delete cascade,
   round integer not null,
+  group_number integer, -- null для round_robin/форматов без групп, 1/2/3... для groups
   team_a_id uuid references teams(id),
   team_b_id uuid references teams(id),
   winner_team_id uuid references teams(id),
