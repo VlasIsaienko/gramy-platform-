@@ -140,6 +140,14 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     else setRegistrations((prev) => prev.filter((r) => r.id !== registrationId));
   }
 
+  async function handleDeleteBracket(category: Category) {
+    if (!window.confirm("Удалить сетку категории? Все матчи этой категории будут удалены.")) return;
+    setError(null);
+    const { error } = await supabase.from("matches").delete().eq("category_id", category.id);
+    if (error) setError("Не удалось удалить сетку: " + error.message);
+    else await loadAll();
+  }
+
   function teamLabel(teamId: string): string {
     const team = teams.find((t) => t.id === teamId);
     if (!team) return "—";
@@ -278,6 +286,7 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
               roundsMap.get(m.round)!.push(m);
             });
             const matchesByRound = Array.from(roundsMap.entries()).sort((a, b) => a[0] - b[0]);
+            const isLocked = matchesByRound.length > 0;
 
             return (
               <div key={category.id} className="bg-white rounded-xl shadow-sm p-6">
@@ -300,14 +309,18 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                       return (
                         <div key={r.id} className={"flex items-center justify-between px-4 py-2.5 " + (i !== categoryRegistrations.length - 1 ? "border-b border-black/5" : "")}>
                           <span className="text-ink text-sm">{player?.full_name || "Неизвестный игрок"}</span>
-                          <button onClick={() => handleRemovePlayer(r.id)} className="text-xs text-slateGray hover:text-shuttle transition">Убрать</button>
+                          {!isLocked && (
+                            <button onClick={() => handleRemovePlayer(r.id)} className="text-xs text-slateGray hover:text-shuttle transition">Убрать</button>
+                          )}
                         </div>
                       );
                     })}
                   </div>
                 )}
 
-                {isFull ? (
+                {isLocked ? (
+                  <p className="text-xs text-slateGray">Состав закрыт — сетка сгенерирована. Удалите сетку, чтобы изменить состав.</p>
+                ) : isFull ? (
                   <p className="text-xs text-shuttle">Достигнут лимит участников турнира.</p>
                 ) : (
                   <div>
@@ -337,9 +350,12 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                 )}
 
                 <div className="mt-5 pt-5 border-t border-black/5">
-                  {matchesByRound.length > 0 ? (
+                  {isLocked ? (
                     <div>
-                      <h3 className="text-sm font-semibold text-ink mb-3">Сетка (Round Robin)</h3>
+                      <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-sm font-semibold text-ink">Сетка (Round Robin)</h3>
+                        <button onClick={() => handleDeleteBracket(category)} className="text-xs text-shuttle hover:text-shuttle/70 transition">Удалить сетку</button>
+                      </div>
                       <div className="space-y-4">
                         {matchesByRound.map(([round, roundMatches]) => (
                           <div key={round}>
