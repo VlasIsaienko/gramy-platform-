@@ -3,12 +3,14 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
+import { generateSchedule, type TournamentFormat } from "@/lib/bracket";
 
 interface Tournament {
   id: string;
   name: string;
   date: string;
   max_players: number;
+  format: TournamentFormat;
 }
 
 interface Category {
@@ -28,6 +30,22 @@ interface Registration {
   player_id: string;
 }
 
+interface Team {
+  id: string;
+  category_id: string;
+  player_id_1: string;
+  player_id_2: string | null;
+}
+
+interface Match {
+  id: string;
+  category_id: string;
+  round: number;
+  team_a_id: string;
+  team_b_id: string;
+  status: string;
+}
+
 const MATCH_CATEGORIES = [
   { value: "singles", label: "Одиночный" },
   { value: "doubles", label: "Парный" },
@@ -41,6 +59,8 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
   const [categories, setCategories] = useState<Category[]>([]);
   const [registrations, setRegistrations] = useState<Registration[]>([]);
   const [players, setPlayers] = useState<Player[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
+  const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,16 +69,19 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
   const [savingCategory, setSavingCategory] = useState(false);
 
   const [searchByCategory, setSearchByCategory] = useState<Record<string, string>>({});
+  const [generatingCategoryId, setGeneratingCategoryId] = useState<string | null>(null);
 
   async function loadAll() {
     setLoading(true);
     setError(null);
 
-    const [tournamentRes, categoriesRes, registrationsRes, playersRes] = await Promise.all([
-      supabase.from("tournaments").select("id, name, date, max_players").eq("id", tournamentId).single(),
+    const [tournamentRes, categoriesRes, registrationsRes, playersRes, teamsRes, matchesRes] = await Promise.all([
+      supabase.from("tournaments").select("id, name, date, max_players, format").eq("id", tournamentId).single(),
       supabase.from("categories").select("id, name, match_category").eq("tournament_id", tournamentId).order("name"),
       supabase.from("registrations").select("id, category_id, player_id").eq("tournament_id", tournamentId),
       supabase.from("players").select("id, full_name").order("full_name"),
+      supabase.from("teams").select("id, category_id, player_id_1, player_id_2").eq("tournament_id", tournamentId),
+      supabase.from("matches").select("id, category_id, round, team_a_id, team_b_id, status").eq("tournament_id", tournamentId).order("round"),
     ]);
 
     if (tournamentRes.error) setError("Не удалось загрузить турнир: " + tournamentRes.error.message);
@@ -72,6 +95,12 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
 
     if (playersRes.error) setError("Не удалось загрузить игроков: " + playersRes.error.message);
     else setPlayers(playersRes.data || []);
+
+    if (teamsRes.error) setError("Не удалось загрузить команды: " + teamsRes.error.message);
+    else setTeams(teamsRes.data || []);
+
+    if (matchesRes.error) setError("Не удалось загрузить сетку: " + matchesRes.error.message);
+    else setMatches(matchesRes.data || []);
 
     setLoading(false);
   }
@@ -109,6 +138,72 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     const { error } = await supabase.from("registrations").delete().eq("id", registrationId);
     if (error) setError("Не удалось убрать игрока: " + error.message);
     else setRegistrations((prev) => prev.filter((r) => r.id !== registrationId));
+  }
+
+  function teamLabel(teamId: string): string {
+    const team = teams.find((t) => t.id === teamId);
+    if (!team) return "—";
+    const p1 = players.find((p) => p.id === team.player_id_1)?.full_name || "—";
+    if (!team.player_id_2) return p1;
+    const p2 = players.find((p) => p.id === team.player_id_2)?.full_name || "—";
+    return `${p1} / ${p2}`;
+  }
+
+  async function handleGenerateBracket(category: Category) {
+    if (!tournament) return;
+    const categoryPlayerIds = registrations.filter((r) => r.category_id === category.id).map((r) => r.player_id);
+    if (categoryPlayerIds.length < 2) return;
+
+    setError(null);
+    setGeneratingCategoryId(category.id);
+
+    // Одна команда-«одиночка» на игрока (player_id_2 = null) — для парных
+    // категорий это временно, пока нет отдельного UI формирования пар.
+    const teamIdByPlayer = new Map(
+      teams.filter((t) => t.category_id === category.id && !t.player_id_2).map((t) => [t.player_id_1, t.id])
+    );
+    const missingPlayerIds = categoryPlayerIds.filter((pid) => !teamIdByPlayer.has(pid));
+
+    if (missingPlayerIds.length > 0) {
+      const { data, error } = await supabase
+        .from("teams")
+        .insert(missingPlayerIds.map((pid) => ({
+          tournament_id: tournamentId, category_id: category.id, player_id_1: pid, player_id_2: null,
+        })))
+        .select("id, player_id_1");
+      if (error) {
+        setError("Не удалось создать команды: " + error.message);
+        setGeneratingCategoryId(null);
+        return;
+      }
+      (data || []).forEach((t) => teamIdByPlayer.set(t.player_id_1, t.id));
+    }
+
+    let rounds;
+    try {
+      rounds = generateSchedule(tournament.format, categoryPlayerIds);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось сгенерировать сетку.");
+      setGeneratingCategoryId(null);
+      return;
+    }
+
+    const matchRows = rounds.flatMap((pairs, idx) =>
+      pairs.map(([a, b]) => ({
+        tournament_id: tournamentId,
+        category_id: category.id,
+        round: idx + 1,
+        team_a_id: teamIdByPlayer.get(a)!,
+        team_b_id: teamIdByPlayer.get(b)!,
+        status: "pending",
+      }))
+    );
+
+    const { error } = await supabase.from("matches").insert(matchRows);
+    if (error) setError("Не удалось сохранить сетку: " + error.message);
+    else await loadAll();
+
+    setGeneratingCategoryId(null);
   }
 
   if (loading) {
@@ -176,6 +271,14 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
               ? players.filter((p) => !registeredPlayerIds.has(p.id) && p.full_name.toLowerCase().includes(search)).slice(0, 8)
               : [];
 
+            const categoryMatches = matches.filter((m) => m.category_id === category.id);
+            const roundsMap = new Map<number, Match[]>();
+            categoryMatches.forEach((m) => {
+              if (!roundsMap.has(m.round)) roundsMap.set(m.round, []);
+              roundsMap.get(m.round)!.push(m);
+            });
+            const matchesByRound = Array.from(roundsMap.entries()).sort((a, b) => a[0] - b[0]);
+
             return (
               <div key={category.id} className="bg-white rounded-xl shadow-sm p-6">
                 <div className="flex items-center justify-between mb-4">
@@ -232,6 +335,40 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                     )}
                   </div>
                 )}
+
+                <div className="mt-5 pt-5 border-t border-black/5">
+                  {matchesByRound.length > 0 ? (
+                    <div>
+                      <h3 className="text-sm font-semibold text-ink mb-3">Сетка (Round Robin)</h3>
+                      <div className="space-y-4">
+                        {matchesByRound.map(([round, roundMatches]) => (
+                          <div key={round}>
+                            <p className="text-xs font-medium text-slateGray mb-1.5">Раунд {round}</p>
+                            <div className="space-y-1.5">
+                              {roundMatches.map((m) => (
+                                <div key={m.id} className="flex items-center justify-between text-sm bg-courtLine/60 rounded-lg px-3 py-2">
+                                  <span className="text-ink">{teamLabel(m.team_a_id)}</span>
+                                  <span className="text-slateGray text-xs">vs</span>
+                                  <span className="text-ink">{teamLabel(m.team_b_id)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : categoryRegistrations.length >= 2 ? (
+                    <button
+                      onClick={() => handleGenerateBracket(category)}
+                      disabled={generatingCategoryId === category.id}
+                      className="px-5 py-2.5 rounded-xl bg-court text-white font-semibold hover:bg-court/90 transition disabled:opacity-50"
+                    >
+                      {generatingCategoryId === category.id ? "Генерирую..." : "Сгенерировать сетку"}
+                    </button>
+                  ) : (
+                    <p className="text-xs text-slateGray">Нужно минимум 2 зарегистрированных игрока, чтобы сгенерировать сетку.</p>
+                  )}
+                </div>
               </div>
             );
           })}
