@@ -179,3 +179,55 @@ export function generateSchedule<T>(
       throw new Error(`Формат "${format}" пока не поддерживается генератором сетки.`);
   }
 }
+
+// ============================================================
+// Поддержка ручного редактирования уже сгенерированной сетки.
+// Не меняет и не вызывает алгоритмы генерации/распределения выше —
+// это отдельная, чисто проверочная функция для матчей после правки.
+// ============================================================
+
+export interface MatchPair {
+  round: number;
+  teamA: string;
+  teamB: string;
+}
+
+/**
+ * Проверяет целостность round robin для одной группы/категории:
+ * никто не играет дважды в одном раунде, каждая пара участников
+ * встречается ровно один раз. Используется только для необязательного
+ * предупреждения после ручной правки матча — ничего не блокирует.
+ */
+export function checkRoundRobinIntegrity(participantIds: string[], matchPairs: MatchPair[]): string[] {
+  const issues = new Set<string>();
+  const pairCounts = new Map<string, number>();
+  const roundOccupants = new Map<number, Set<string>>();
+
+  for (const { round, teamA, teamB } of matchPairs) {
+    if (teamA === teamB) {
+      issues.add("Участник не может играть сам с собой.");
+      continue;
+    }
+    const key = [teamA, teamB].sort().join("||");
+    pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
+
+    const occupants = roundOccupants.get(round) ?? new Set<string>();
+    if (occupants.has(teamA) || occupants.has(teamB)) {
+      issues.add(`Кто-то играет больше одного матча в раунде ${round}.`);
+    }
+    occupants.add(teamA);
+    occupants.add(teamB);
+    roundOccupants.set(round, occupants);
+  }
+
+  for (const count of pairCounts.values()) {
+    if (count > 1) issues.add("Какая-то пара играет между собой больше одного раза.");
+  }
+
+  const expectedPairs = (participantIds.length * (participantIds.length - 1)) / 2;
+  if (pairCounts.size < expectedPairs) {
+    issues.add("Не все участники сыграют друг с другом ровно один раз.");
+  }
+
+  return Array.from(issues);
+}

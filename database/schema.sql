@@ -62,7 +62,8 @@ create table teams (
   tournament_id uuid references tournaments(id) on delete cascade,
   category_id uuid references categories(id) on delete cascade,
   player_id_1 uuid references players(id),
-  player_id_2 uuid references players(id) -- null для одиночного разряда
+  player_id_2 uuid references players(id), -- null для одиночного разряда
+  group_number integer -- null вне формата groups; иначе номер группы команды
 );
 
 -- Матчи

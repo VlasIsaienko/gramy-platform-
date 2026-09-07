@@ -3,7 +3,15 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
-import { generateSchedule, resolveGroupSizes, shuffle, type TournamentFormat, type GroupDistributionMode } from "@/lib/bracket";
+import {
+  generateSchedule,
+  generateRoundRobinRounds,
+  checkRoundRobinIntegrity,
+  resolveGroupSizes,
+  shuffle,
+  type TournamentFormat,
+  type GroupDistributionMode,
+} from "@/lib/bracket";
 
 interface Tournament {
   id: string;
@@ -37,6 +45,7 @@ interface Team {
   category_id: string;
   player_id_1: string;
   player_id_2: string | null;
+  group_number: number | null;
 }
 
 interface Match {
@@ -96,6 +105,11 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
   // Выбор партнёра для непарного "лишнего" через выпадающий список.
   const [oddOneOutTarget, setOddOneOutTarget] = useState<Record<string, string>>({});
 
+  // Редактирование уже сгенерированной сетки: состав групп и пары в матчах.
+  const [editingGroupComposition, setEditingGroupComposition] = useState<Record<string, boolean>>({});
+  const [editingMatchId, setEditingMatchId] = useState<string | null>(null);
+  const [editMatchSelections, setEditMatchSelections] = useState<{ teamA: string; teamB: string } | null>(null);
+
   async function loadAll() {
     setLoading(true);
     setError(null);
@@ -105,7 +119,7 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
       supabase.from("categories").select("id, name, match_category").eq("tournament_id", tournamentId).order("name"),
       supabase.from("registrations").select("id, category_id, player_id").eq("tournament_id", tournamentId),
       supabase.from("players").select("id, full_name, rating_singles, rating_doubles").order("full_name"),
-      supabase.from("teams").select("id, category_id, player_id_1, player_id_2").eq("tournament_id", tournamentId),
+      supabase.from("teams").select("id, category_id, player_id_1, player_id_2, group_number").eq("tournament_id", tournamentId),
       supabase.from("matches").select("id, category_id, round, group_number, team_a_id, team_b_id, status").eq("tournament_id", tournamentId).order("round"),
     ]);
 
@@ -353,6 +367,17 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
       return;
     }
 
+    if (tournament.format === "groups") {
+      for (const pool of pools) {
+        if (pool.groupNumber === null) continue;
+        for (const participantId of pool.participants) {
+          const teamId = teamIdByParticipant.get(participantId)!;
+          const { error } = await supabase.from("teams").update({ group_number: pool.groupNumber }).eq("id", teamId);
+          if (error) { setError("Не удалось сохранить группы: " + error.message); setGeneratingCategoryId(null); return; }
+        }
+      }
+    }
+
     const matchRows = pools.flatMap((pool) =>
       pool.rounds.flatMap((pairs, idx) =>
         pairs.map(([a, b]) => ({
@@ -372,6 +397,98 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     else await loadAll();
 
     setGeneratingCategoryId(null);
+  }
+
+  /**
+   * Переносит команду в другую группу и пересчитывает mini round robin
+   * для обеих затронутых групп (старой и новой) с новым составом —
+   * остальные группы категории не трогаются. Переиспользует тот же
+   * generateRoundRobinRounds, что и обычная генерация.
+   */
+  async function handleMoveToGroup(category: Category, teamId: string, fromGroup: number, toGroup: number) {
+    setError(null);
+    const { error: moveError } = await supabase.from("teams").update({ group_number: toGroup }).eq("id", teamId);
+    if (moveError) { setError("Не удалось переместить участника: " + moveError.message); return; }
+
+    const { error: deleteError } = await supabase.from("matches").delete().eq("category_id", category.id).in("group_number", [fromGroup, toGroup]);
+    if (deleteError) { setError("Не удалось пересчитать матчи: " + deleteError.message); return; }
+
+    const updatedTeams = teams.map((t) => (t.id === teamId ? { ...t, group_number: toGroup } : t));
+    const newMatchRows: { tournament_id: string; category_id: string; round: number; group_number: number; team_a_id: string; team_b_id: string; status: string }[] = [];
+
+    for (const groupNumber of [fromGroup, toGroup]) {
+      const groupTeamIds = updatedTeams.filter((t) => t.category_id === category.id && t.group_number === groupNumber).map((t) => t.id);
+      if (groupTeamIds.length < 2) continue;
+      const rounds = generateRoundRobinRounds(groupTeamIds);
+      rounds.forEach((pairs, idx) => {
+        pairs.forEach(([a, b]) => {
+          newMatchRows.push({
+            tournament_id: tournamentId, category_id: category.id, round: idx + 1, group_number: groupNumber,
+            team_a_id: a, team_b_id: b, status: "pending",
+          });
+        });
+      });
+    }
+
+    if (newMatchRows.length > 0) {
+      const { error: insertError } = await supabase.from("matches").insert(newMatchRows);
+      if (insertError) { setError("Не удалось сохранить пересчитанные матчи: " + insertError.message); return; }
+    }
+
+    setEditingGroupComposition({});
+    await loadAll();
+  }
+
+  function startEditMatch(match: Match) {
+    setEditingMatchId(match.id);
+    setEditMatchSelections({ teamA: match.team_a_id, teamB: match.team_b_id });
+  }
+
+  function cancelEditMatch() {
+    setEditingMatchId(null);
+    setEditMatchSelections(null);
+  }
+
+  /**
+   * Сохраняет ручную замену команд в матче. Жёсткая проверка — участник не
+   * может одновременно играть другой матч того же раунда (той же группы/
+   * категории). Мягкая — если правка ломает целостность round robin
+   * (кто-то не сыграет с кем-то, или сыграет дважды), администратора просто
+   * предупреждают и дают решить самому, сохранять ли.
+   */
+  async function handleUpdateMatch(match: Match, newTeamAId: string, newTeamBId: string) {
+    setError(null);
+    if (newTeamAId === newTeamBId) { setError("Команда не может играть сама с собой."); return; }
+
+    const sameRoundGroup = matches.filter((m) =>
+      m.id !== match.id && m.category_id === match.category_id && m.round === match.round && m.group_number === match.group_number
+    );
+    const busy = new Set(sameRoundGroup.flatMap((m) => [m.team_a_id, m.team_b_id]));
+    if (busy.has(newTeamAId) || busy.has(newTeamBId)) {
+      setError("Один из выбранных участников уже играет в этом раунде в другом матче.");
+      return;
+    }
+
+    const groupTeamIds = teams
+      .filter((t) => t.category_id === match.category_id && t.group_number === match.group_number)
+      .map((t) => t.id);
+    const groupMatchPairs = matches
+      .filter((m) => m.category_id === match.category_id && m.group_number === match.group_number)
+      .map((m) => (m.id === match.id
+        ? { round: m.round, teamA: newTeamAId, teamB: newTeamBId }
+        : { round: m.round, teamA: m.team_a_id, teamB: m.team_b_id }));
+    const issues = checkRoundRobinIntegrity(groupTeamIds, groupMatchPairs);
+    if (issues.length > 0) {
+      const proceed = window.confirm(
+        "Внимание: после этого изменения корректность round robin не гарантируется:\n\n" + issues.join("\n") + "\n\nСохранить всё равно?"
+      );
+      if (!proceed) return;
+    }
+
+    const { error } = await supabase.from("matches").update({ team_a_id: newTeamAId, team_b_id: newTeamBId }).eq("id", match.id);
+    if (error) { setError("Не удалось сохранить изменения: " + error.message); return; }
+    cancelEditMatch();
+    await loadAll();
   }
 
   if (loading) {
@@ -457,13 +574,14 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
             const otherPendingForOddOneOut = oddOneOut ? pendingTeams.filter((t) => t.id !== oddOneOut.id) : [];
 
             const categoryMatches = matches.filter((m) => m.category_id === category.id);
-            const groupsMap = new Map<number | null, Match[]>();
-            categoryMatches.forEach((m) => {
-              if (!groupsMap.has(m.group_number)) groupsMap.set(m.group_number, []);
-              groupsMap.get(m.group_number)!.push(m);
-            });
-            const matchesByGroup = Array.from(groupsMap.entries()).sort((a, b) => (a[0] ?? 0) - (b[0] ?? 0));
             const isLocked = categoryMatches.length > 0;
+            const isGroupsFormat = tournament.format === "groups";
+            // Состав группы берём из teams (а не из matches) — иначе группа,
+            // после переноса оставшаяся с 1 участником (0 матчей), пропала бы
+            // из интерфейса и стала бы недоступна для правки.
+            const groupNumbersForDisplay = isGroupsFormat
+              ? Array.from(new Set(categoryTeams.map((t) => t.group_number).filter((g): g is number => g !== null))).sort((a, b) => a - b)
+              : [null];
 
             return (
               <div key={category.id} className="bg-white rounded-xl shadow-sm p-6">
@@ -675,7 +793,12 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                         <button onClick={() => handleDeleteBracket(category)} className="text-xs text-shuttle hover:text-shuttle/70 transition">Удалить сетку</button>
                       </div>
                       <div className="space-y-5">
-                        {matchesByGroup.map(([groupNumber, groupMatches]) => {
+                        {groupNumbersForDisplay.map((groupNumber) => {
+                          const groupTeamIds = groupNumber !== null
+                            ? categoryTeams.filter((t) => t.group_number === groupNumber).map((t) => t.id)
+                            : categoryTeams.map((t) => t.id);
+                          const groupMatches = categoryMatches.filter((m) => m.group_number === groupNumber);
+
                           const roundsMap = new Map<number, Match[]>();
                           groupMatches.forEach((m) => {
                             if (!roundsMap.has(m.round)) roundsMap.set(m.round, []);
@@ -683,23 +806,102 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                           });
                           const roundsForGroup = Array.from(roundsMap.entries()).sort((a, b) => a[0] - b[0]);
 
+                          const editKey = `${category.id}:${groupNumber}`;
+                          const isEditingComposition = !!editingGroupComposition[editKey];
+                          const otherGroupNumbers = groupNumbersForDisplay.filter((g): g is number => g !== null && g !== groupNumber);
+
                           return (
                             <div key={groupNumber ?? "single"}>
                               {groupNumber !== null && (
-                                <p className="text-sm font-semibold text-court mb-2">Группа {groupNumber}</p>
+                                <div className="flex items-center justify-between mb-2">
+                                  <p className="text-sm font-semibold text-court">Группа {groupNumber}</p>
+                                  <button
+                                    onClick={() => setEditingGroupComposition((prev) => ({ ...prev, [editKey]: !prev[editKey] }))}
+                                    className="text-xs text-shuttle hover:text-shuttle/70 transition"
+                                  >
+                                    {isEditingComposition ? "Готово" : "Изменить состав"}
+                                  </button>
+                                </div>
                               )}
+
+                              {isEditingComposition && (
+                                <div className="border border-black/10 rounded-lg p-3 mb-3 space-y-1.5 bg-courtLine/40">
+                                  {groupTeamIds.length === 0 ? (
+                                    <p className="text-xs text-slateGray">Группа пуста.</p>
+                                  ) : groupTeamIds.map((teamId) => (
+                                    <div key={teamId} className="flex items-center justify-between text-sm bg-white rounded-lg px-3 py-1.5">
+                                      <span className="text-ink">{teamLabel(teamId)}</span>
+                                      {otherGroupNumbers.length > 0 && (
+                                        <select
+                                          value=""
+                                          onChange={(e) => { if (e.target.value) handleMoveToGroup(category, teamId, groupNumber!, parseInt(e.target.value, 10)); }}
+                                          className="text-xs border border-black/10 rounded px-2 py-1 bg-white outline-none"
+                                        >
+                                          <option value="">Переместить в...</option>
+                                          {otherGroupNumbers.map((g) => <option key={g} value={g}>Группа {g}</option>)}
+                                        </select>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              {groupTeamIds.length > 0 && roundsForGroup.length === 0 && (
+                                <p className="text-xs text-slateGray">В группе меньше 2 участников — матчей нет.</p>
+                              )}
+
                               <div className="space-y-4">
                                 {roundsForGroup.map(([round, roundMatches]) => (
                                   <div key={round}>
                                     <p className="text-xs font-medium text-slateGray mb-1.5">Раунд {round}</p>
                                     <div className="space-y-1.5">
-                                      {roundMatches.map((m) => (
-                                        <div key={m.id} className="flex items-center justify-between text-sm bg-courtLine/60 rounded-lg px-3 py-2">
-                                          <span className="text-ink">{teamLabel(m.team_a_id)}</span>
-                                          <span className="text-slateGray text-xs">vs</span>
-                                          <span className="text-ink">{teamLabel(m.team_b_id)}</span>
-                                        </div>
-                                      ))}
+                                      {roundMatches.map((m) => {
+                                        const isEditingThis = editingMatchId === m.id;
+                                        const busyElsewhere = new Set(
+                                          categoryMatches
+                                            .filter((other) => other.id !== m.id && other.round === m.round && other.group_number === m.group_number)
+                                            .flatMap((other) => [other.team_a_id, other.team_b_id])
+                                        );
+                                        const candidates = groupTeamIds.filter((id) => !busyElsewhere.has(id));
+
+                                        if (!isEditingThis) {
+                                          return (
+                                            <div key={m.id} className="flex items-center justify-between text-sm bg-courtLine/60 rounded-lg px-3 py-2">
+                                              <span className="text-ink">{teamLabel(m.team_a_id)}</span>
+                                              <span className="text-slateGray text-xs">vs</span>
+                                              <span className="text-ink">{teamLabel(m.team_b_id)}</span>
+                                              <button onClick={() => startEditMatch(m)} className="text-xs text-shuttle hover:text-shuttle/70 transition ml-3">Изменить</button>
+                                            </div>
+                                          );
+                                        }
+
+                                        const sel = editMatchSelections!;
+                                        return (
+                                          <div key={m.id} className="flex items-center gap-2 text-sm bg-white border border-black/10 rounded-lg px-3 py-2 flex-wrap">
+                                            <select
+                                              value={sel.teamA}
+                                              onChange={(e) => setEditMatchSelections({ ...sel, teamA: e.target.value })}
+                                              className="text-xs border border-black/10 rounded px-2 py-1 bg-white outline-none"
+                                            >
+                                              {candidates.filter((id) => id !== sel.teamB).map((id) => (
+                                                <option key={id} value={id}>{teamLabel(id)}</option>
+                                              ))}
+                                            </select>
+                                            <span className="text-slateGray text-xs">vs</span>
+                                            <select
+                                              value={sel.teamB}
+                                              onChange={(e) => setEditMatchSelections({ ...sel, teamB: e.target.value })}
+                                              className="text-xs border border-black/10 rounded px-2 py-1 bg-white outline-none"
+                                            >
+                                              {candidates.filter((id) => id !== sel.teamA).map((id) => (
+                                                <option key={id} value={id}>{teamLabel(id)}</option>
+                                              ))}
+                                            </select>
+                                            <button onClick={() => handleUpdateMatch(m, sel.teamA, sel.teamB)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">Сохранить</button>
+                                            <button onClick={cancelEditMatch} className="text-xs text-slateGray hover:text-shuttle transition">Отмена</button>
+                                          </div>
+                                        );
+                                      })}
                                     </div>
                                   </div>
                                 ))}
