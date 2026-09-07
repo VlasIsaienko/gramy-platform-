@@ -9,8 +9,13 @@ import {
   checkRoundRobinIntegrity,
   resolveGroupSizes,
   shuffle,
+  generateOlympicBracket,
+  generateNextOlympicRound,
+  olympicRoundLabel,
+  nextPowerOfTwo,
   type TournamentFormat,
   type GroupDistributionMode,
+  type OlympicSeedingMode,
 } from "@/lib/bracket";
 
 interface Tournament {
@@ -25,6 +30,7 @@ interface Category {
   id: string;
   name: string;
   match_category: "singles" | "doubles" | "mixed";
+  third_place_match: boolean;
 }
 
 interface Player {
@@ -53,8 +59,11 @@ interface Match {
   category_id: string;
   round: number;
   group_number: number | null;
+  bracket_position: number | null;
+  match_type: "standard" | "third_place";
   team_a_id: string;
-  team_b_id: string;
+  team_b_id: string | null;
+  winner_team_id: string | null;
   status: string;
 }
 
@@ -110,17 +119,23 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
   const [editingMatchId, setEditingMatchId] = useState<string | null>(null);
   const [editMatchSelections, setEditMatchSelections] = useState<{ teamA: string; teamB: string } | null>(null);
 
+  // Генерация Olympic: способ посева, опциональный матч за 3-е место, позиции при ручном посеве.
+  const [olympicSeedingMode, setOlympicSeedingMode] = useState<Record<string, OlympicSeedingMode>>({});
+  const [olympicThirdPlace, setOlympicThirdPlace] = useState<Record<string, boolean>>({});
+  const [olympicManualSlots, setOlympicManualSlots] = useState<Record<string, (string | null)[]>>({});
+  const [generatingNextRoundFor, setGeneratingNextRoundFor] = useState<string | null>(null);
+
   async function loadAll() {
     setLoading(true);
     setError(null);
 
     const [tournamentRes, categoriesRes, registrationsRes, playersRes, teamsRes, matchesRes] = await Promise.all([
       supabase.from("tournaments").select("id, name, date, max_players, format").eq("id", tournamentId).single(),
-      supabase.from("categories").select("id, name, match_category").eq("tournament_id", tournamentId).order("name"),
+      supabase.from("categories").select("id, name, match_category, third_place_match").eq("tournament_id", tournamentId).order("name"),
       supabase.from("registrations").select("id, category_id, player_id").eq("tournament_id", tournamentId),
       supabase.from("players").select("id, full_name, rating_singles, rating_doubles").order("full_name"),
       supabase.from("teams").select("id, category_id, player_id_1, player_id_2, group_number").eq("tournament_id", tournamentId),
-      supabase.from("matches").select("id, category_id, round, group_number, team_a_id, team_b_id, status").eq("tournament_id", tournamentId).order("round"),
+      supabase.from("matches").select("id, category_id, round, group_number, bracket_position, match_type, team_a_id, team_b_id, winner_team_id, status").eq("tournament_id", tournamentId).order("round"),
     ]);
 
     if (tournamentRes.error) setError("Не удалось загрузить турнир: " + tournamentRes.error.message);
@@ -285,7 +300,8 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     else await loadAll();
   }
 
-  function teamLabel(teamId: string): string {
+  function teamLabel(teamId: string | null): string {
+    if (!teamId) return "BYE";
     const team = teams.find((t) => t.id === teamId);
     if (!team) return "—";
     const p1 = players.find((p) => p.id === team.player_id_1)?.full_name || "—";
@@ -342,6 +358,60 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
       const r1 = players.find((p) => p.id === team.player_id_1)?.rating_doubles ?? 0;
       const r2 = team.player_id_2 ? players.find((p) => p.id === team.player_id_2)?.rating_doubles ?? 0 : 0;
       return team.player_id_2 ? (r1 + r2) / 2 : r1;
+    }
+
+    if (tournament.format === "olympic") {
+      const mode = olympicSeedingMode[category.id] ?? "auto";
+      const playThirdPlace = olympicThirdPlace[category.id] ?? category.third_place_match;
+
+      let bracket;
+      try {
+        if (mode === "manual") {
+          const size = nextPowerOfTwo(participantIds.length);
+          const slots = olympicManualSlots[category.id];
+          if (!slots || slots.length !== size || slots.filter((s) => s !== null).length !== participantIds.length) {
+            setError("Заполните все позиции сетки перед генерацией.");
+            setGeneratingCategoryId(null);
+            return;
+          }
+          bracket = generateOlympicBracket(participantIds, { seedingMode: "manual", manualSlots: slots });
+        } else {
+          bracket = generateOlympicBracket(participantIds, { seedingMode: mode, getRating: ratingOf });
+        }
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Не удалось сгенерировать сетку.");
+        setGeneratingCategoryId(null);
+        return;
+      }
+
+      const { error: prefError } = await supabase.from("categories").update({ third_place_match: playThirdPlace }).eq("id", category.id);
+      if (prefError) { setError("Не удалось сохранить настройки: " + prefError.message); setGeneratingCategoryId(null); return; }
+
+      const matchRows = bracket.firstRound.map((m) => {
+        const teamAId = m.teamA ? teamIdByParticipant.get(m.teamA)! : null;
+        const teamBId = m.teamB ? teamIdByParticipant.get(m.teamB)! : null;
+        const isBye = teamAId === null || teamBId === null;
+        const realTeamId = teamAId ?? teamBId!;
+        return {
+          tournament_id: tournamentId,
+          category_id: category.id,
+          round: 1,
+          group_number: null,
+          bracket_position: m.bracketPosition,
+          match_type: "standard" as const,
+          team_a_id: realTeamId,
+          team_b_id: isBye ? null : teamBId,
+          winner_team_id: isBye ? realTeamId : null,
+          status: isBye ? "completed" : "pending",
+        };
+      });
+
+      const { error } = await supabase.from("matches").insert(matchRows);
+      if (error) setError("Не удалось сохранить сетку: " + error.message);
+      else await loadAll();
+
+      setGeneratingCategoryId(null);
+      return;
     }
 
     let pools;
@@ -491,6 +561,66 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     await loadAll();
   }
 
+  /**
+   * Заглушка ввода результата на этом этапе (Фаза 4 сделает полноценный ввод
+   * счёта): просто фиксирует победителя матча Olympic, без сетов/очков.
+   */
+  async function handleSetWinner(match: Match, winnerId: string) {
+    setError(null);
+    const { error } = await supabase.from("matches").update({ winner_team_id: winnerId, status: "completed" }).eq("id", match.id);
+    if (error) { setError("Не удалось сохранить победителя: " + error.message); return; }
+    await loadAll();
+  }
+
+  /**
+   * Строит следующий раунд сетки Olympic из победителей текущего (и, если
+   * это был полуфинал и включён матч за 3-е место, — сам этот матч тоже).
+   */
+  async function handleGenerateNextOlympicRound(category: Category) {
+    setError(null);
+    setGeneratingNextRoundFor(category.id);
+
+    const standardMatches = matches.filter((m) => m.category_id === category.id && m.match_type === "standard");
+    const maxRound = Math.max(...standardMatches.map((m) => m.round));
+    const currentRoundMatches = standardMatches.filter((m) => m.round === maxRound);
+
+    if (currentRoundMatches.length < 2 || currentRoundMatches.some((m) => !m.winner_team_id)) {
+      setGeneratingNextRoundFor(null);
+      return;
+    }
+
+    const result = generateNextOlympicRound(
+      currentRoundMatches.map((m) => ({
+        bracketPosition: m.bracket_position!, teamA: m.team_a_id, teamB: m.team_b_id, winner: m.winner_team_id!,
+      })),
+      category.third_place_match
+    );
+
+    const nextRound = maxRound + 1;
+    const rows: Array<{
+      tournament_id: string; category_id: string; round: number; group_number: null;
+      bracket_position: number; match_type: "standard" | "third_place";
+      team_a_id: string; team_b_id: string; winner_team_id: null; status: string;
+    }> = result.matches.map((m) => ({
+      tournament_id: tournamentId, category_id: category.id, round: nextRound, group_number: null,
+      bracket_position: m.bracketPosition, match_type: "standard",
+      team_a_id: m.teamA, team_b_id: m.teamB, winner_team_id: null, status: "pending",
+    }));
+    if (result.thirdPlace) {
+      rows.push({
+        tournament_id: tournamentId, category_id: category.id, round: nextRound, group_number: null,
+        bracket_position: 0, match_type: "third_place",
+        team_a_id: result.thirdPlace.teamA, team_b_id: result.thirdPlace.teamB, winner_team_id: null, status: "pending",
+      });
+    }
+
+    const { error } = await supabase.from("matches").insert(rows);
+    if (error) setError("Не удалось сгенерировать раунд: " + error.message);
+    else await loadAll();
+
+    setGeneratingNextRoundFor(null);
+  }
+
   if (loading) {
     return <div className="bg-white rounded-xl p-8 text-center text-slateGray shadow-sm">Загрузка...</div>;
   }
@@ -561,7 +691,8 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
             const pendingTeams = isDoublesLike ? categoryTeams.filter((t) => !t.player_id_2) : [];
             const completeTeams = isDoublesLike ? categoryTeams.filter((t) => t.player_id_2) : [];
             const hasPending = pendingTeams.length > 0;
-            const participantCount = isDoublesLike ? completeTeams.length : categoryRegistrations.length;
+            const participantIdsForGeneration = isDoublesLike ? completeTeams.map((t) => t.id) : categoryRegistrations.map((r) => r.player_id);
+            const participantCount = participantIdsForGeneration.length;
 
             const pending = pendingRegistration[category.id];
             const partnerSearch = (partnerSearchByCategory[category.id] || "").trim().toLowerCase();
@@ -576,6 +707,16 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
             const categoryMatches = matches.filter((m) => m.category_id === category.id);
             const isLocked = categoryMatches.length > 0;
             const isGroupsFormat = tournament.format === "groups";
+            const isOlympicFormat = tournament.format === "olympic";
+
+            const olympicThirdPlaceMatch = isOlympicFormat ? categoryMatches.find((m) => m.match_type === "third_place") : undefined;
+            const olympicStandardMatches = categoryMatches.filter((m) => m.match_type === "standard");
+            const olympicRound1Count = olympicStandardMatches.filter((m) => m.round === 1).length;
+            const olympicTotalRounds = olympicRound1Count > 0 ? Math.log2(olympicRound1Count * 2) : 0;
+            const olympicMaxRound = olympicStandardMatches.length > 0 ? Math.max(...olympicStandardMatches.map((m) => m.round)) : 0;
+            const olympicCurrentRoundMatches = olympicStandardMatches.filter((m) => m.round === olympicMaxRound);
+            const olympicCurrentRoundDecided = olympicCurrentRoundMatches.length > 0 && olympicCurrentRoundMatches.every((m) => m.winner_team_id);
+            const olympicIsChampionDecided = olympicCurrentRoundMatches.length === 1 && olympicCurrentRoundDecided;
             // Состав группы берём из teams (а не из matches) — иначе группа,
             // после переноса оставшаяся с 1 участником (0 матчей), пропала бы
             // из интерфейса и стала бы недоступна для правки.
@@ -797,7 +938,7 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                           const groupTeamIds = groupNumber !== null
                             ? categoryTeams.filter((t) => t.group_number === groupNumber).map((t) => t.id)
                             : categoryTeams.map((t) => t.id);
-                          const groupMatches = categoryMatches.filter((m) => m.group_number === groupNumber);
+                          const groupMatches = categoryMatches.filter((m) => m.group_number === groupNumber && m.match_type === "standard");
 
                           const roundsMap = new Map<number, Match[]>();
                           groupMatches.forEach((m) => {
@@ -851,61 +992,138 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                               )}
 
                               <div className="space-y-4">
-                                {roundsForGroup.map(([round, roundMatches]) => (
-                                  <div key={round}>
-                                    <p className="text-xs font-medium text-slateGray mb-1.5">Раунд {round}</p>
-                                    <div className="space-y-1.5">
-                                      {roundMatches.map((m) => {
-                                        const isEditingThis = editingMatchId === m.id;
-                                        const busyElsewhere = new Set(
-                                          categoryMatches
-                                            .filter((other) => other.id !== m.id && other.round === m.round && other.group_number === m.group_number)
-                                            .flatMap((other) => [other.team_a_id, other.team_b_id])
-                                        );
-                                        const candidates = groupTeamIds.filter((id) => !busyElsewhere.has(id));
+                                {roundsForGroup.map(([round, roundMatches]) => {
+                                  // В Olympic состав раунда N+1 — только победители раунда N, а не вся
+                                  // категория/группа целиком (в отличие от round robin/groups, где состав
+                                  // не меняется между раундами) — поэтому кандидаты на замену берём из
+                                  // фактических участников именно этого раунда.
+                                  const roundCandidatePool = isOlympicFormat
+                                    ? Array.from(new Set(
+                                        categoryMatches
+                                          .filter((mm) => mm.round === round && mm.match_type === "standard")
+                                          .flatMap((mm) => [mm.team_a_id, mm.team_b_id])
+                                          .filter((id): id is string => id !== null)
+                                      ))
+                                    : groupTeamIds;
 
-                                        if (!isEditingThis) {
+                                  return (
+                                    <div key={round}>
+                                      <p className="text-xs font-medium text-slateGray mb-1.5">
+                                        {isOlympicFormat ? olympicRoundLabel(round, olympicTotalRounds) : `Раунд ${round}`}
+                                      </p>
+                                      <div className="space-y-1.5">
+                                        {roundMatches.map((m) => {
+                                          const isBye = isOlympicFormat && m.team_b_id === null;
+                                          const isDecided = isOlympicFormat && !!m.winner_team_id;
+                                          const isEditingThis = editingMatchId === m.id;
+                                          const busyElsewhere = new Set(
+                                            categoryMatches
+                                              .filter((other) => other.id !== m.id && other.round === m.round && other.group_number === m.group_number)
+                                              .flatMap((other) => [other.team_a_id, other.team_b_id])
+                                          );
+                                          const candidates = roundCandidatePool.filter((id) => !busyElsewhere.has(id));
+
+                                          if (isBye) {
+                                            return (
+                                              <div key={m.id} className="flex items-center justify-between text-sm bg-courtLine/60 rounded-lg px-3 py-2">
+                                                <span className="text-ink font-medium">{teamLabel(m.team_a_id)}</span>
+                                                <span className="text-xs text-slateGray">bye — проходит дальше без игры</span>
+                                              </div>
+                                            );
+                                          }
+
+                                          if (!isEditingThis) {
+                                            return (
+                                              <div key={m.id} className="flex items-center justify-between text-sm bg-courtLine/60 rounded-lg px-3 py-2">
+                                                <span className={"text-ink " + (isDecided && m.winner_team_id === m.team_a_id ? "font-semibold" : "")}>
+                                                  {teamLabel(m.team_a_id)}{isDecided && m.winner_team_id === m.team_a_id ? " 🏆" : ""}
+                                                </span>
+                                                <span className="text-slateGray text-xs">vs</span>
+                                                <span className={"text-ink " + (isDecided && m.winner_team_id === m.team_b_id ? "font-semibold" : "")}>
+                                                  {teamLabel(m.team_b_id)}{isDecided && m.winner_team_id === m.team_b_id ? " 🏆" : ""}
+                                                </span>
+                                                <div className="flex items-center gap-2 ml-3">
+                                                  {isOlympicFormat && !isDecided && (
+                                                    <>
+                                                      <button onClick={() => handleSetWinner(m, m.team_a_id)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">🏆 {teamLabel(m.team_a_id)}</button>
+                                                      <button onClick={() => handleSetWinner(m, m.team_b_id!)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">🏆 {teamLabel(m.team_b_id)}</button>
+                                                    </>
+                                                  )}
+                                                  {(!isOlympicFormat || !isDecided) && (
+                                                    <button onClick={() => startEditMatch(m)} className="text-xs text-shuttle hover:text-shuttle/70 transition">Изменить</button>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            );
+                                          }
+
+                                          const sel = editMatchSelections!;
                                           return (
-                                            <div key={m.id} className="flex items-center justify-between text-sm bg-courtLine/60 rounded-lg px-3 py-2">
-                                              <span className="text-ink">{teamLabel(m.team_a_id)}</span>
+                                            <div key={m.id} className="flex items-center gap-2 text-sm bg-white border border-black/10 rounded-lg px-3 py-2 flex-wrap">
+                                              <select
+                                                value={sel.teamA}
+                                                onChange={(e) => setEditMatchSelections({ ...sel, teamA: e.target.value })}
+                                                className="text-xs border border-black/10 rounded px-2 py-1 bg-white outline-none"
+                                              >
+                                                {candidates.filter((id) => id !== sel.teamB).map((id) => (
+                                                  <option key={id} value={id}>{teamLabel(id)}</option>
+                                                ))}
+                                              </select>
                                               <span className="text-slateGray text-xs">vs</span>
-                                              <span className="text-ink">{teamLabel(m.team_b_id)}</span>
-                                              <button onClick={() => startEditMatch(m)} className="text-xs text-shuttle hover:text-shuttle/70 transition ml-3">Изменить</button>
+                                              <select
+                                                value={sel.teamB}
+                                                onChange={(e) => setEditMatchSelections({ ...sel, teamB: e.target.value })}
+                                                className="text-xs border border-black/10 rounded px-2 py-1 bg-white outline-none"
+                                              >
+                                                {candidates.filter((id) => id !== sel.teamA).map((id) => (
+                                                  <option key={id} value={id}>{teamLabel(id)}</option>
+                                                ))}
+                                              </select>
+                                              <button onClick={() => handleUpdateMatch(m, sel.teamA, sel.teamB)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">Сохранить</button>
+                                              <button onClick={cancelEditMatch} className="text-xs text-slateGray hover:text-shuttle transition">Отмена</button>
                                             </div>
                                           );
-                                        }
-
-                                        const sel = editMatchSelections!;
-                                        return (
-                                          <div key={m.id} className="flex items-center gap-2 text-sm bg-white border border-black/10 rounded-lg px-3 py-2 flex-wrap">
-                                            <select
-                                              value={sel.teamA}
-                                              onChange={(e) => setEditMatchSelections({ ...sel, teamA: e.target.value })}
-                                              className="text-xs border border-black/10 rounded px-2 py-1 bg-white outline-none"
-                                            >
-                                              {candidates.filter((id) => id !== sel.teamB).map((id) => (
-                                                <option key={id} value={id}>{teamLabel(id)}</option>
-                                              ))}
-                                            </select>
-                                            <span className="text-slateGray text-xs">vs</span>
-                                            <select
-                                              value={sel.teamB}
-                                              onChange={(e) => setEditMatchSelections({ ...sel, teamB: e.target.value })}
-                                              className="text-xs border border-black/10 rounded px-2 py-1 bg-white outline-none"
-                                            >
-                                              {candidates.filter((id) => id !== sel.teamA).map((id) => (
-                                                <option key={id} value={id}>{teamLabel(id)}</option>
-                                              ))}
-                                            </select>
-                                            <button onClick={() => handleUpdateMatch(m, sel.teamA, sel.teamB)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">Сохранить</button>
-                                            <button onClick={cancelEditMatch} className="text-xs text-slateGray hover:text-shuttle transition">Отмена</button>
-                                          </div>
-                                        );
-                                      })}
+                                        })}
+                                      </div>
                                     </div>
-                                  </div>
-                                ))}
+                                  );
+                                })}
                               </div>
+
+                              {isOlympicFormat && olympicThirdPlaceMatch && (
+                                <div className="mt-4">
+                                  <p className="text-xs font-medium text-slateGray mb-1.5">Матч за 3-е место</p>
+                                  <div className="flex items-center justify-between text-sm bg-courtLine/60 rounded-lg px-3 py-2">
+                                    <span className={"text-ink " + (olympicThirdPlaceMatch.winner_team_id === olympicThirdPlaceMatch.team_a_id ? "font-semibold" : "")}>
+                                      {teamLabel(olympicThirdPlaceMatch.team_a_id)}{olympicThirdPlaceMatch.winner_team_id === olympicThirdPlaceMatch.team_a_id ? " 🏆" : ""}
+                                    </span>
+                                    <span className="text-slateGray text-xs">vs</span>
+                                    <span className={"text-ink " + (olympicThirdPlaceMatch.winner_team_id === olympicThirdPlaceMatch.team_b_id ? "font-semibold" : "")}>
+                                      {teamLabel(olympicThirdPlaceMatch.team_b_id)}{olympicThirdPlaceMatch.winner_team_id === olympicThirdPlaceMatch.team_b_id ? " 🏆" : ""}
+                                    </span>
+                                    {!olympicThirdPlaceMatch.winner_team_id && (
+                                      <div className="flex items-center gap-2 ml-3">
+                                        <button onClick={() => handleSetWinner(olympicThirdPlaceMatch!, olympicThirdPlaceMatch!.team_a_id)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">🏆 {teamLabel(olympicThirdPlaceMatch.team_a_id)}</button>
+                                        <button onClick={() => handleSetWinner(olympicThirdPlaceMatch!, olympicThirdPlaceMatch!.team_b_id!)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">🏆 {teamLabel(olympicThirdPlaceMatch.team_b_id)}</button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+
+                              {isOlympicFormat && olympicIsChampionDecided && (
+                                <p className="mt-4 text-sm font-semibold text-court">🏆 Чемпион: {teamLabel(olympicCurrentRoundMatches[0].winner_team_id)}</p>
+                              )}
+
+                              {isOlympicFormat && !olympicIsChampionDecided && olympicCurrentRoundDecided && olympicCurrentRoundMatches.length > 1 && (
+                                <button
+                                  onClick={() => handleGenerateNextOlympicRound(category)}
+                                  disabled={generatingNextRoundFor === category.id}
+                                  className="mt-4 px-5 py-2.5 rounded-xl bg-court text-white font-semibold hover:bg-court/90 transition disabled:opacity-50"
+                                >
+                                  {generatingNextRoundFor === category.id ? "Генерирую..." : "Сгенерировать следующий раунд"}
+                                </button>
+                              )}
                             </div>
                           );
                         })}
@@ -916,13 +1134,25 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                   ) : participantCount >= 2 ? (
                     (() => {
                       const isGroups = tournament.format === "groups";
+                      const isOlympic = tournament.format === "olympic";
                       const mode = distributionMode[category.id] ?? "auto";
                       const basis = manualBasis[category.id] ?? "size";
                       const rawValue = manualValue[category.id] || "";
                       const parsedValue = parseInt(rawValue, 10);
                       const hasValidValue = Number.isFinite(parsedValue) && parsedValue > 0;
                       const manualReady = mode !== "manual" || hasValidValue;
-                      const canGenerate = !isGroups || manualReady;
+
+                      const olympicMode = olympicSeedingMode[category.id] ?? "auto";
+                      const olympicSize = nextPowerOfTwo(participantCount);
+                      const olympicByeCount = olympicSize - participantCount;
+                      const olympicPlayThirdPlace = olympicThirdPlace[category.id] ?? category.third_place_match;
+                      const olympicSlots = olympicManualSlots[category.id];
+                      const olympicManualReady =
+                        olympicMode !== "manual" ||
+                        (!!olympicSlots && olympicSlots.length === olympicSize && olympicSlots.filter((s) => s !== null).length === participantCount);
+                      const participantLabel = (id: string) => (isDoublesLike ? teamLabel(id) : players.find((p) => p.id === id)?.full_name || "—");
+
+                      const canGenerate = isGroups ? manualReady : isOlympic ? olympicManualReady : true;
 
                       const previewSizes = isGroups
                         ? resolveGroupSizes(
@@ -987,6 +1217,89 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                               )}
 
                               {previewText && <p className="text-xs text-slateGray">{previewText}</p>}
+                            </div>
+                          )}
+
+                          {isOlympic && (
+                            <div className="mb-4 space-y-3">
+                              <div className="flex gap-4">
+                                {([
+                                  { value: "auto", label: "Авто" },
+                                  { value: "random", label: "Случайно" },
+                                  { value: "manual", label: "Вручную" },
+                                ] as { value: OlympicSeedingMode; label: string }[]).map((opt) => (
+                                  <label key={opt.value} className="flex items-center gap-1.5 text-sm text-ink cursor-pointer">
+                                    <input
+                                      type="radio"
+                                      name={`olympic-seeding-${category.id}`}
+                                      checked={olympicMode === opt.value}
+                                      onChange={() => {
+                                        setOlympicSeedingMode((prev) => ({ ...prev, [category.id]: opt.value }));
+                                        if (opt.value === "manual") {
+                                          setOlympicManualSlots((prev) => {
+                                            if (prev[category.id]?.length === olympicSize) return prev;
+                                            const initial: (string | null)[] = [
+                                              ...participantIdsForGeneration,
+                                              ...Array(olympicByeCount).fill(null),
+                                            ];
+                                            return { ...prev, [category.id]: initial };
+                                          });
+                                        }
+                                      }}
+                                    />
+                                    {opt.label}
+                                  </label>
+                                ))}
+                              </div>
+
+                              <label className="flex items-center gap-1.5 text-sm text-ink cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={olympicPlayThirdPlace}
+                                  onChange={(e) => setOlympicThirdPlace((prev) => ({ ...prev, [category.id]: e.target.checked }))}
+                                />
+                                Играть матч за 3-е место
+                              </label>
+
+                              {olympicMode === "manual" && (
+                                <div className="space-y-1.5">
+                                  {Array.from({ length: olympicSize }, (_, posIdx) => {
+                                    const currentSlots = olympicSlots || [];
+                                    const currentValue = currentSlots[posIdx] ?? "";
+                                    const usedElsewhere = new Set(
+                                      currentSlots.filter((_, idx) => idx !== posIdx).filter((v): v is string => v !== null)
+                                    );
+                                    const options = participantIdsForGeneration.filter((id) => !usedElsewhere.has(id));
+                                    return (
+                                      <div key={posIdx} className="flex items-center gap-2">
+                                        <span className="text-xs text-slateGray w-20 shrink-0">Позиция {posIdx + 1}</span>
+                                        <select
+                                          value={currentValue}
+                                          onChange={(e) => {
+                                            const val = e.target.value || null;
+                                            setOlympicManualSlots((prev) => {
+                                              const next = [...(prev[category.id] || Array(olympicSize).fill(null))];
+                                              next[posIdx] = val;
+                                              return { ...prev, [category.id]: next };
+                                            });
+                                          }}
+                                          className="text-xs border border-black/10 rounded px-2 py-1 bg-white outline-none flex-1"
+                                        >
+                                          <option value="">Bye</option>
+                                          {options.map((id) => (
+                                            <option key={id} value={id}>{participantLabel(id)}</option>
+                                          ))}
+                                        </select>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              <p className="text-xs text-slateGray">
+                                {participantCount} {isDoublesLike ? "пар" : "игроков"} → сетка на {olympicSize}
+                                {olympicByeCount > 0 ? ` (${olympicByeCount} bye)` : ""}
+                              </p>
                             </div>
                           )}
 

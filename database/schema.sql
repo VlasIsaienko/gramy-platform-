@@ -43,7 +43,8 @@ create table categories (
   id uuid primary key default gen_random_uuid(),
   tournament_id uuid references tournaments(id) on delete cascade,
   name text not null,
-  match_category text not null check (match_category in ('singles','doubles','mixed'))
+  match_category text not null check (match_category in ('singles','doubles','mixed')),
+  third_place_match boolean not null default true -- только для формата olympic
 );
 
 -- Регистрации игроков на турнир/категорию
@@ -73,6 +74,8 @@ create table matches (
   category_id uuid references categories(id) on delete cascade,
   round integer not null,
   group_number integer, -- null для round_robin/форматов без групп, 1/2/3... для groups
+  bracket_position integer, -- только для olympic: позиция матча внутри раунда
+  match_type text not null default 'standard' check (match_type in ('standard','third_place')),
   team_a_id uuid references teams(id),
   team_b_id uuid references teams(id),
   winner_team_id uuid references teams(id),

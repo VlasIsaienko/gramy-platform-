@@ -181,6 +181,161 @@ export function generateSchedule<T>(
 }
 
 // ============================================================
+// Olympic / Single Elimination.
+//
+// Принципиально отличается от round_robin/groups: полная сетка не
+// известна заранее — раунд N+1 строится только когда известны
+// победители раунда N. Поэтому Olympic не проходит через общий
+// generateSchedule() (его контракт — вся сетка целиком, Pool<T>[]) —
+// у него свои функции: generateOlympicBracket() для первого раунда
+// (сразу целиком, с посевом и bye) и generateNextOlympicRound() для
+// каждого последующего раунда по мере готовности результатов.
+// ============================================================
+
+export function nextPowerOfTwo(n: number): number {
+  let p = 1;
+  while (p < n) p *= 2;
+  return p;
+}
+
+/**
+ * Классический порядок сеяния турнирной сетки: для size=8 даёт
+ * [1,8,4,5,2,7,3,6] — сеед 1 и 2 не могут встретиться раньше финала,
+ * сеед 1 и 3/4 — раньше полуфинала, и т.д. Возвращает номера сеедов
+ * (1-индексация) в порядке позиций в сетке, длина = size.
+ */
+function computeSeedOrder(size: number): number[] {
+  let seeds = [1];
+  while (seeds.length < size) {
+    const n = seeds.length * 2;
+    const next: number[] = [];
+    for (const s of seeds) next.push(s, n + 1 - s);
+    seeds = next;
+  }
+  return seeds;
+}
+
+/**
+ * Случайно раскидывает участников по size позициям, гарантируя, что
+ * bye не достанется сразу двум позициям одной пары (иначе получился
+ * бы матч без единого реального участника).
+ */
+function randomSeedSlots<T>(participants: T[], size: number): (T | null)[] {
+  const n = participants.length;
+  const byeCount = size - n;
+  const pairCount = size / 2;
+  const shuffledParticipants = shuffle(participants);
+  const byePairs = new Set(shuffle(Array.from({ length: pairCount }, (_, i) => i)).slice(0, byeCount));
+
+  const slots: (T | null)[] = new Array(size).fill(null);
+  let ptr = 0;
+  for (let pair = 0; pair < pairCount; pair++) {
+    slots[pair * 2] = shuffledParticipants[ptr++];
+    slots[pair * 2 + 1] = byePairs.has(pair) ? null : shuffledParticipants[ptr++];
+  }
+  return slots;
+}
+
+export type OlympicSeedingMode = "auto" | "random" | "manual";
+
+export interface OlympicScheduleOptions<T> {
+  seedingMode?: OlympicSeedingMode; // по умолчанию "auto"
+  getRating?: (participant: T) => number; // нужен для "auto"
+  manualSlots?: (T | null)[]; // нужен для "manual": длина = ближайшая степень двойки, null = bye
+}
+
+export interface OlympicFirstRoundMatch<T> {
+  bracketPosition: number;
+  teamA: T | null;
+  teamB: T | null; // null означает bye — teamA автоматически проходит дальше
+}
+
+export interface OlympicBracket<T> {
+  size: number; // ближайшая степень двойки ≥ числу участников
+  totalRounds: number; // log2(size)
+  firstRound: OlympicFirstRoundMatch<T>[];
+}
+
+export function generateOlympicBracket<T>(participants: T[], options?: OlympicScheduleOptions<T>): OlympicBracket<T> {
+  const n = participants.length;
+  const size = nextPowerOfTwo(n);
+  const totalRounds = Math.log2(size);
+  const mode = options?.seedingMode ?? "auto";
+
+  let slots: (T | null)[];
+  if (mode === "manual") {
+    if (!options?.manualSlots || options.manualSlots.length !== size) {
+      throw new Error("Для ручного посева нужно указать участника или bye для каждой позиции сетки.");
+    }
+    slots = options.manualSlots;
+  } else if (mode === "random") {
+    slots = randomSeedSlots(participants, size);
+  } else {
+    const sorted = [...participants].sort((a, b) => (options?.getRating?.(b) ?? 0) - (options?.getRating?.(a) ?? 0));
+    const seedOrder = computeSeedOrder(size);
+    slots = seedOrder.map((seedNum) => (seedNum <= n ? sorted[seedNum - 1] : null));
+  }
+
+  const firstRound: OlympicFirstRoundMatch<T>[] = [];
+  for (let i = 0; i < size / 2; i++) {
+    firstRound.push({ bracketPosition: i, teamA: slots[2 * i], teamB: slots[2 * i + 1] });
+  }
+
+  return { size, totalRounds, firstRound };
+}
+
+export interface DecidedOlympicMatch<T> {
+  bracketPosition: number;
+  teamA: T;
+  teamB: T | null;
+  winner: T;
+}
+
+export interface NextOlympicRoundResult<T> {
+  matches: Array<{ bracketPosition: number; teamA: T; teamB: T }>;
+  thirdPlace: { teamA: T; teamB: T } | null;
+}
+
+/**
+ * Строит следующий раунд из победителей уже решённого раунда (bye тоже
+ * считается решённым матчем со своим winner). Если это был полуфинал
+ * (ровно 2 матча) и playThirdPlace=true, дополнительно возвращает матч
+ * за 3-е место между проигравшими полуфиналов.
+ */
+export function generateNextOlympicRound<T>(
+  currentRoundMatches: DecidedOlympicMatch<T>[],
+  playThirdPlace: boolean
+): NextOlympicRoundResult<T> {
+  const sorted = [...currentRoundMatches].sort((a, b) => a.bracketPosition - b.bracketPosition);
+  const winners = sorted.map((m) => m.winner);
+
+  if (winners.length < 2) return { matches: [], thirdPlace: null };
+
+  const matches: Array<{ bracketPosition: number; teamA: T; teamB: T }> = [];
+  for (let i = 0; i < winners.length / 2; i++) {
+    matches.push({ bracketPosition: i, teamA: winners[2 * i], teamB: winners[2 * i + 1] });
+  }
+
+  let thirdPlace: { teamA: T; teamB: T } | null = null;
+  if (playThirdPlace && sorted.length === 2) {
+    const loserOf = (m: DecidedOlympicMatch<T>): T => (m.winner === m.teamA ? m.teamB! : m.teamA);
+    thirdPlace = { teamA: loserOf(sorted[0]), teamB: loserOf(sorted[1]) };
+  }
+
+  return { matches, thirdPlace };
+}
+
+/** Понятная подпись раунда для двух последних раундов сетки на выбывание. */
+export function olympicRoundLabel(round: number, totalRounds: number): string {
+  const roundsFromEnd = totalRounds - round;
+  if (roundsFromEnd === 0) return "Финал";
+  if (roundsFromEnd === 1) return "Полуфинал";
+  if (roundsFromEnd === 2) return "1/4 финала";
+  if (roundsFromEnd === 3) return "1/8 финала";
+  return `Раунд ${round}`;
+}
+
+// ============================================================
 // Поддержка ручного редактирования уже сгенерированной сетки.
 // Не меняет и не вызывает алгоритмы генерации/распределения выше —
 // это отдельная, чисто проверочная функция для матчей после правки.
