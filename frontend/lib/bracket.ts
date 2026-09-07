@@ -49,27 +49,113 @@ export interface Pool<T> {
   rounds: Round<T>[];
 }
 
+/** Балансирует n элементов по numGroups группам: размеры отличаются максимум на 1. */
+function computeGroupSizes(n: number, numGroups: number): number[] {
+  const base = Math.floor(n / numGroups);
+  const remainder = n % numGroups;
+  return Array.from({ length: numGroups }, (_, g) => base + (g < remainder ? 1 : 0));
+}
+
 /**
- * Делит участников на группы фиксированного целевого размера, балансируя
- * последнюю группу так, чтобы не оставалось "сиротской" группы из 1 человека
- * (например, 10 участников при targetSize=4 → группы 4/3/3, а не 4/4/2).
+ * Считает размеры групп по явному числу групп / размеру группы, а если ни то,
+ * ни другое не задано — по умолчанию (целевой размер ~4, что на практике даёт
+ * группы по 3-4 человека и без "сиротской" группы из 1 человека).
+ */
+export function resolveGroupSizes(n: number, groupCount?: number, groupSize?: number): number[] {
+  let numGroups: number;
+  if (groupCount && groupCount > 0) numGroups = Math.min(Math.floor(groupCount), n);
+  else if (groupSize && groupSize > 0) numGroups = Math.ceil(n / groupSize);
+  else numGroups = Math.ceil(n / 4);
+
+  return computeGroupSizes(n, Math.max(1, numGroups));
+}
+
+/**
+ * Делит участников на группы фиксированного целевого размера (без учёта
+ * рейтинга или перемешивания — просто по порядку). Используется, когда
+ * распределение внутри группы не важно.
  */
 export function splitIntoGroups<T>(participants: T[], targetSize = 4): T[][] {
   const n = participants.length;
   if (n === 0) return [];
 
-  const numGroups = Math.max(1, Math.ceil(n / targetSize));
-  const base = Math.floor(n / numGroups);
-  const remainder = n % numGroups;
-
+  const sizes = resolveGroupSizes(n, undefined, targetSize);
   const groups: T[][] = [];
   let idx = 0;
-  for (let g = 0; g < numGroups; g++) {
-    const size = base + (g < remainder ? 1 : 0);
+  for (const size of sizes) {
     groups.push(participants.slice(idx, idx + size));
     idx += size;
   }
   return groups;
+}
+
+function shuffle<T>(items: T[]): T[] {
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/** Раздаёт участников по кругу: 1→A, 2→B, 3→C, 4→A, 5→B... (без учёта порядка). */
+function dealCyclic<T>(items: T[], numGroups: number): T[][] {
+  const groups: T[][] = Array.from({ length: numGroups }, () => []);
+  items.forEach((item, i) => groups[i % numGroups].push(item));
+  return groups;
+}
+
+/**
+ * Раздаёт УЖЕ отсортированных участников змейкой: 1→A, 2→B, 3→C, затем
+ * обратный порядок C→B→A, затем снова A→B→C, и т.д. — так топ-рейтинг
+ * распределяется по группам равномерно, а не оседает в одной группе.
+ * groupSizes может быть неравномерным (отличаться максимум на 1) —
+ * группа, уже набравшая свой размер, пропускается.
+ */
+function snakeSeed<T>(sortedParticipants: T[], groupSizes: number[]): T[][] {
+  const groups: T[][] = groupSizes.map(() => []);
+  const maxRounds = Math.max(...groupSizes);
+  const indices = groupSizes.map((_, i) => i);
+  let ptr = 0;
+
+  for (let round = 0; round < maxRounds; round++) {
+    const order = round % 2 === 0 ? indices : [...indices].reverse();
+    for (const gi of order) {
+      if (groups[gi].length < groupSizes[gi] && ptr < sortedParticipants.length) {
+        groups[gi].push(sortedParticipants[ptr]);
+        ptr++;
+      }
+    }
+  }
+  return groups;
+}
+
+export type GroupDistributionMode = "auto" | "random" | "manual";
+
+export interface GroupsScheduleOptions<T> {
+  distributionMode?: GroupDistributionMode; // по умолчанию "auto"
+  groupCount?: number; // используется только для "manual"
+  groupSize?: number; // используется только для "manual" (если groupCount не задан)
+  getRating?: (participant: T) => number; // нужен для "auto"/"manual"-змейки; для "random" не используется
+}
+
+function generateGroupsSchedule<T>(participants: T[], options?: GroupsScheduleOptions<T>): Pool<T>[] {
+  const mode = options?.distributionMode ?? "auto";
+  const groupSizes = resolveGroupSizes(participants.length, options?.groupCount, options?.groupSize);
+
+  const groups: T[][] =
+    mode === "random"
+      ? dealCyclic(shuffle(participants), groupSizes.length)
+      : snakeSeed(
+          [...participants].sort((a, b) => (options?.getRating?.(b) ?? 0) - (options?.getRating?.(a) ?? 0)),
+          groupSizes
+        );
+
+  return groups.map((group, i) => ({
+    groupNumber: i + 1,
+    participants: group,
+    rounds: generateRoundRobinRounds(group),
+  }));
 }
 
 /**
@@ -78,16 +164,16 @@ export function splitIntoGroups<T>(participants: T[], targetSize = 4): T[][] {
  * Mexicano/Americano — свой подбор пар по раундам — добавятся сюда отдельной
  * веткой позже.
  */
-export function generateSchedule<T>(format: TournamentFormat, participants: T[]): Pool<T>[] {
+export function generateSchedule<T>(
+  format: TournamentFormat,
+  participants: T[],
+  groupsOptions?: GroupsScheduleOptions<T>
+): Pool<T>[] {
   switch (format) {
     case "round_robin":
       return [{ groupNumber: null, participants, rounds: generateRoundRobinRounds(participants) }];
     case "groups":
-      return splitIntoGroups(participants).map((group, i) => ({
-        groupNumber: i + 1,
-        participants: group,
-        rounds: generateRoundRobinRounds(group),
-      }));
+      return generateGroupsSchedule(participants, groupsOptions);
     default:
       throw new Error(`Формат "${format}" пока не поддерживается генератором сетки.`);
   }

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
-import { generateSchedule, type TournamentFormat } from "@/lib/bracket";
+import { generateSchedule, resolveGroupSizes, type TournamentFormat, type GroupDistributionMode } from "@/lib/bracket";
 
 interface Tournament {
   id: string;
@@ -22,6 +22,7 @@ interface Category {
 interface Player {
   id: string;
   full_name: string;
+  rating_singles: number;
 }
 
 interface Registration {
@@ -80,6 +81,10 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
   const [searchByCategory, setSearchByCategory] = useState<Record<string, string>>({});
   const [generatingCategoryId, setGeneratingCategoryId] = useState<string | null>(null);
 
+  const [distributionMode, setDistributionMode] = useState<Record<string, GroupDistributionMode>>({});
+  const [manualBasis, setManualBasis] = useState<Record<string, "count" | "size">>({});
+  const [manualValue, setManualValue] = useState<Record<string, string>>({});
+
   async function loadAll() {
     setLoading(true);
     setError(null);
@@ -88,7 +93,7 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
       supabase.from("tournaments").select("id, name, date, max_players, format").eq("id", tournamentId).single(),
       supabase.from("categories").select("id, name, match_category").eq("tournament_id", tournamentId).order("name"),
       supabase.from("registrations").select("id, category_id, player_id").eq("tournament_id", tournamentId),
-      supabase.from("players").select("id, full_name").order("full_name"),
+      supabase.from("players").select("id, full_name, rating_singles").order("full_name"),
       supabase.from("teams").select("id, category_id, player_id_1, player_id_2").eq("tournament_id", tournamentId),
       supabase.from("matches").select("id, category_id, round, group_number, team_a_id, team_b_id, status").eq("tournament_id", tournamentId).order("round"),
     ]);
@@ -198,7 +203,21 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
 
     let pools;
     try {
-      pools = generateSchedule(tournament.format, categoryPlayerIds);
+      if (tournament.format === "groups") {
+        const mode = distributionMode[category.id] ?? "auto";
+        const basis = manualBasis[category.id] ?? "size";
+        const parsedValue = parseInt(manualValue[category.id] || "", 10);
+        const hasValidValue = Number.isFinite(parsedValue) && parsedValue > 0;
+
+        pools = generateSchedule(tournament.format, categoryPlayerIds, {
+          distributionMode: mode,
+          groupCount: mode === "manual" && basis === "count" && hasValidValue ? parsedValue : undefined,
+          groupSize: mode === "manual" && basis === "size" && hasValidValue ? parsedValue : undefined,
+          getRating: (playerId) => players.find((p) => p.id === playerId)?.rating_singles ?? 0,
+        });
+      } else {
+        pools = generateSchedule(tournament.format, categoryPlayerIds);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Не удалось сгенерировать сетку.");
       setGeneratingCategoryId(null);
@@ -404,13 +423,91 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                       </div>
                     </div>
                   ) : categoryRegistrations.length >= 2 ? (
-                    <button
-                      onClick={() => handleGenerateBracket(category)}
-                      disabled={generatingCategoryId === category.id}
-                      className="px-5 py-2.5 rounded-xl bg-court text-white font-semibold hover:bg-court/90 transition disabled:opacity-50"
-                    >
-                      {generatingCategoryId === category.id ? "Генерирую..." : "Сгенерировать сетку"}
-                    </button>
+                    (() => {
+                      const isGroups = tournament.format === "groups";
+                      const mode = distributionMode[category.id] ?? "auto";
+                      const basis = manualBasis[category.id] ?? "size";
+                      const rawValue = manualValue[category.id] || "";
+                      const parsedValue = parseInt(rawValue, 10);
+                      const hasValidValue = Number.isFinite(parsedValue) && parsedValue > 0;
+                      const manualReady = mode !== "manual" || hasValidValue;
+                      const canGenerate = !isGroups || manualReady;
+
+                      const previewSizes = isGroups
+                        ? resolveGroupSizes(
+                            categoryRegistrations.length,
+                            mode === "manual" && basis === "count" && hasValidValue ? parsedValue : undefined,
+                            mode === "manual" && basis === "size" && hasValidValue ? parsedValue : undefined
+                          )
+                        : [];
+                      const previewText = previewSizes.length
+                        ? previewSizes.every((s) => s === previewSizes[0])
+                          ? `${categoryRegistrations.length} игроков → ${previewSizes.length} ${previewSizes.length === 1 ? "группа" : "группы"} по ${previewSizes[0]}`
+                          : `${categoryRegistrations.length} игроков → ${previewSizes.length} групп (${previewSizes.join(", ")})`
+                        : "";
+
+                      return (
+                        <div>
+                          {isGroups && (
+                            <div className="mb-4 space-y-3">
+                              <div className="flex gap-4">
+                                {([
+                                  { value: "auto", label: "Авто" },
+                                  { value: "random", label: "Случайно" },
+                                  { value: "manual", label: "Вручную" },
+                                ] as { value: GroupDistributionMode; label: string }[]).map((opt) => (
+                                  <label key={opt.value} className="flex items-center gap-1.5 text-sm text-ink cursor-pointer">
+                                    <input
+                                      type="radio"
+                                      name={`distribution-${category.id}`}
+                                      checked={mode === opt.value}
+                                      onChange={() => setDistributionMode((prev) => ({ ...prev, [category.id]: opt.value }))}
+                                    />
+                                    {opt.label}
+                                  </label>
+                                ))}
+                              </div>
+
+                              {mode === "manual" && (
+                                <div className="flex items-end gap-3">
+                                  <div>
+                                    <label className="text-xs text-slateGray mb-1 block">Параметр</label>
+                                    <select
+                                      value={basis}
+                                      onChange={(e) => setManualBasis((prev) => ({ ...prev, [category.id]: e.target.value as "count" | "size" }))}
+                                      className="border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-court bg-white"
+                                    >
+                                      <option value="size">Размер группы</option>
+                                      <option value="count">Число групп</option>
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label className="text-xs text-slateGray mb-1 block">{basis === "size" ? "Игроков в группе" : "Групп"}</label>
+                                    <input
+                                      type="number"
+                                      min={1}
+                                      value={rawValue}
+                                      onChange={(e) => setManualValue((prev) => ({ ...prev, [category.id]: e.target.value }))}
+                                      className="w-28 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-court"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+
+                              {previewText && <p className="text-xs text-slateGray">{previewText}</p>}
+                            </div>
+                          )}
+
+                          <button
+                            onClick={() => handleGenerateBracket(category)}
+                            disabled={generatingCategoryId === category.id || !canGenerate}
+                            className="px-5 py-2.5 rounded-xl bg-court text-white font-semibold hover:bg-court/90 transition disabled:opacity-50"
+                          >
+                            {generatingCategoryId === category.id ? "Генерирую..." : "Сгенерировать сетку"}
+                          </button>
+                        </div>
+                      );
+                    })()
                   ) : (
                     <p className="text-xs text-slateGray">Нужно минимум 2 зарегистрированных игрока, чтобы сгенерировать сетку.</p>
                   )}
