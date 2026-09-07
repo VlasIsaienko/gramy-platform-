@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
-import { generateSchedule, resolveGroupSizes, type TournamentFormat, type GroupDistributionMode } from "@/lib/bracket";
+import { generateSchedule, resolveGroupSizes, shuffle, type TournamentFormat, type GroupDistributionMode } from "@/lib/bracket";
 
 interface Tournament {
   id: string;
@@ -23,6 +23,7 @@ interface Player {
   id: string;
   full_name: string;
   rating_singles: number;
+  rating_doubles: number;
 }
 
 interface Registration {
@@ -85,6 +86,16 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
   const [manualBasis, setManualBasis] = useState<Record<string, "count" | "size">>({});
   const [manualValue, setManualValue] = useState<Record<string, string>>({});
 
+  // Регистрация в doubles/mixed: после выбора игрока в основном поиске
+  // ждём решения "Ищу напарника" / "Есть напарник" (и, если второе, — выбора партнёра).
+  const [pendingRegistration, setPendingRegistration] = useState<Record<string, { playerId: string; playerName: string; awaitingPartner: boolean }>>({});
+  const [partnerSearchByCategory, setPartnerSearchByCategory] = useState<Record<string, string>>({});
+
+  // Блок "Ищут напарника": ручной выбор двух игроков для пары.
+  const [selectedForPairing, setSelectedForPairing] = useState<Record<string, string[]>>({});
+  // Выбор партнёра для непарного "лишнего" через выпадающий список.
+  const [oddOneOutTarget, setOddOneOutTarget] = useState<Record<string, string>>({});
+
   async function loadAll() {
     setLoading(true);
     setError(null);
@@ -93,7 +104,7 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
       supabase.from("tournaments").select("id, name, date, max_players, format").eq("id", tournamentId).single(),
       supabase.from("categories").select("id, name, match_category").eq("tournament_id", tournamentId).order("name"),
       supabase.from("registrations").select("id, category_id, player_id").eq("tournament_id", tournamentId),
-      supabase.from("players").select("id, full_name, rating_singles").order("full_name"),
+      supabase.from("players").select("id, full_name, rating_singles, rating_doubles").order("full_name"),
       supabase.from("teams").select("id, category_id, player_id_1, player_id_2").eq("tournament_id", tournamentId),
       supabase.from("matches").select("id, category_id, round, group_number, team_a_id, team_b_id, status").eq("tournament_id", tournamentId).order("round"),
     ]);
@@ -147,11 +158,109 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     else await loadAll();
   }
 
-  async function handleRemovePlayer(registrationId: string) {
+  async function handleRegisterSolo(categoryId: string, playerId: string) {
     setError(null);
-    const { error } = await supabase.from("registrations").delete().eq("id", registrationId);
-    if (error) setError("Не удалось убрать игрока: " + error.message);
-    else setRegistrations((prev) => prev.filter((r) => r.id !== registrationId));
+    const { error: regError } = await supabase.from("registrations").insert([{
+      tournament_id: tournamentId, category_id: categoryId, player_id: playerId,
+    }]);
+    if (regError) { setError("Не удалось зарегистрировать игрока: " + regError.message); return; }
+    const { error: teamError } = await supabase.from("teams").insert([{
+      tournament_id: tournamentId, category_id: categoryId, player_id_1: playerId, player_id_2: null,
+    }]);
+    if (teamError) { setError("Не удалось создать команду: " + teamError.message); return; }
+    setPendingRegistration((prev) => { const next = { ...prev }; delete next[categoryId]; return next; });
+    await loadAll();
+  }
+
+  async function handleRegisterPair(categoryId: string, playerAId: string, playerBId: string) {
+    setError(null);
+    const { error: regError } = await supabase.from("registrations").insert([
+      { tournament_id: tournamentId, category_id: categoryId, player_id: playerAId },
+      { tournament_id: tournamentId, category_id: categoryId, player_id: playerBId },
+    ]);
+    if (regError) { setError("Не удалось зарегистрировать игроков: " + regError.message); return; }
+    const { error: teamError } = await supabase.from("teams").insert([{
+      tournament_id: tournamentId, category_id: categoryId, player_id_1: playerAId, player_id_2: playerBId,
+    }]);
+    if (teamError) { setError("Не удалось создать пару: " + teamError.message); return; }
+    setPendingRegistration((prev) => { const next = { ...prev }; delete next[categoryId]; return next; });
+    setPartnerSearchByCategory((prev) => ({ ...prev, [categoryId]: "" }));
+    await loadAll();
+  }
+
+  async function handleRemovePlayer(registration: Registration) {
+    setError(null);
+    const category = categories.find((c) => c.id === registration.category_id);
+
+    if (category && category.match_category !== "singles") {
+      const team = teams.find(
+        (t) => t.category_id === registration.category_id &&
+          (t.player_id_1 === registration.player_id || t.player_id_2 === registration.player_id)
+      );
+      if (team) {
+        if (team.player_id_2) {
+          const partnerId = team.player_id_1 === registration.player_id ? team.player_id_2 : team.player_id_1;
+          const { error: teamError } = await supabase.from("teams").update({ player_id_1: partnerId, player_id_2: null }).eq("id", team.id);
+          if (teamError) { setError("Не удалось обновить пару: " + teamError.message); return; }
+        } else {
+          const { error: teamError } = await supabase.from("teams").delete().eq("id", team.id);
+          if (teamError) { setError("Не удалось удалить команду: " + teamError.message); return; }
+        }
+      }
+    }
+
+    const { error } = await supabase.from("registrations").delete().eq("id", registration.id);
+    if (error) { setError("Не удалось убрать игрока: " + error.message); return; }
+    await loadAll();
+  }
+
+  /**
+   * Объединяет playerA (гарантированно "ищет напарника") с playerB в одну
+   * команду. Если playerB уже был в готовой паре, эта пара расформировывается —
+   * оставшийся игрок снова становится "ищет напарника" (используется и для
+   * обычного ручного выбора двух pending-игроков, и для назначения "лишнему"
+   * партнёра из уже занятой пары).
+   */
+  async function handleForcePair(categoryId: string, playerAId: string, playerBId: string) {
+    const teamA = teams.find((t) => t.category_id === categoryId && t.player_id_1 === playerAId && !t.player_id_2);
+    const teamB = teams.find((t) => t.category_id === categoryId && (t.player_id_1 === playerBId || t.player_id_2 === playerBId));
+    if (!teamA || !teamB) return;
+
+    setError(null);
+    const teamBWasComplete = !!teamB.player_id_2;
+
+    const { error: mergeError } = await supabase.from("teams").update({ player_id_2: playerBId }).eq("id", teamA.id);
+    if (mergeError) { setError("Не удалось создать пару: " + mergeError.message); return; }
+
+    if (teamBWasComplete) {
+      const remainingPlayerId = teamB.player_id_1 === playerBId ? teamB.player_id_2! : teamB.player_id_1;
+      const { error } = await supabase.from("teams").update({ player_id_1: remainingPlayerId, player_id_2: null }).eq("id", teamB.id);
+      if (error) { setError("Не удалось обновить освободившегося партнёра: " + error.message); return; }
+    } else {
+      const { error } = await supabase.from("teams").delete().eq("id", teamB.id);
+      if (error) { setError("Не удалось убрать пустую команду: " + error.message); return; }
+    }
+
+    setSelectedForPairing((prev) => ({ ...prev, [categoryId]: [] }));
+    setOddOneOutTarget((prev) => { const next = { ...prev }; delete next[categoryId]; return next; });
+    await loadAll();
+  }
+
+  async function handleAutoPairAll(categoryId: string) {
+    const pending = teams.filter((t) => t.category_id === categoryId && !t.player_id_2);
+    const shuffled = shuffle(pending);
+    const pairsCount = Math.floor(shuffled.length / 2);
+
+    setError(null);
+    for (let i = 0; i < pairsCount; i++) {
+      const a = shuffled[2 * i];
+      const b = shuffled[2 * i + 1];
+      const { error: updateError } = await supabase.from("teams").update({ player_id_2: b.player_id_1 }).eq("id", a.id);
+      if (updateError) { setError("Не удалось сформировать пары: " + updateError.message); return; }
+      const { error: deleteError } = await supabase.from("teams").delete().eq("id", b.id);
+      if (deleteError) { setError("Не удалось сформировать пары: " + deleteError.message); return; }
+    }
+    await loadAll();
   }
 
   async function handleDeleteBracket(category: Category) {
@@ -173,32 +282,52 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
 
   async function handleGenerateBracket(category: Category) {
     if (!tournament) return;
-    const categoryPlayerIds = registrations.filter((r) => r.category_id === category.id).map((r) => r.player_id);
-    if (categoryPlayerIds.length < 2) return;
+    const isDoublesLike = category.match_category !== "singles";
+    const categoryTeams = teams.filter((t) => t.category_id === category.id);
+
+    let participantIds: string[];
+    // Для doubles/mixed участник генерации — уже готовая пара (команда), а не
+    // игрок: к моменту генерации все зарегистрированные должны быть в парах
+    // (иначе кнопка заблокирована), поэтому "команду-одиночку" тут создавать
+    // не нужно — в отличие от singles.
+    const teamIdByParticipant = new Map<string, string>();
+
+    if (isDoublesLike) {
+      const completeTeams = categoryTeams.filter((t) => t.player_id_2);
+      if (completeTeams.length < 2) return;
+      participantIds = completeTeams.map((t) => t.id);
+      completeTeams.forEach((t) => teamIdByParticipant.set(t.id, t.id));
+    } else {
+      const categoryPlayerIds = registrations.filter((r) => r.category_id === category.id).map((r) => r.player_id);
+      if (categoryPlayerIds.length < 2) return;
+      participantIds = categoryPlayerIds;
+
+      const existingSolo = new Map(categoryTeams.filter((t) => !t.player_id_2).map((t) => [t.player_id_1, t.id]));
+      const missingPlayerIds = categoryPlayerIds.filter((pid) => !existingSolo.has(pid));
+
+      if (missingPlayerIds.length > 0) {
+        const { data, error } = await supabase
+          .from("teams")
+          .insert(missingPlayerIds.map((pid) => ({
+            tournament_id: tournamentId, category_id: category.id, player_id_1: pid, player_id_2: null,
+          })))
+          .select("id, player_id_1");
+        if (error) { setError("Не удалось создать команды: " + error.message); return; }
+        (data || []).forEach((t) => existingSolo.set(t.player_id_1, t.id));
+      }
+      existingSolo.forEach((teamId, playerId) => teamIdByParticipant.set(playerId, teamId));
+    }
 
     setError(null);
     setGeneratingCategoryId(category.id);
 
-    // Одна команда-«одиночка» на игрока (player_id_2 = null) — для парных
-    // категорий это временно, пока нет отдельного UI формирования пар.
-    const teamIdByPlayer = new Map(
-      teams.filter((t) => t.category_id === category.id && !t.player_id_2).map((t) => [t.player_id_1, t.id])
-    );
-    const missingPlayerIds = categoryPlayerIds.filter((pid) => !teamIdByPlayer.has(pid));
-
-    if (missingPlayerIds.length > 0) {
-      const { data, error } = await supabase
-        .from("teams")
-        .insert(missingPlayerIds.map((pid) => ({
-          tournament_id: tournamentId, category_id: category.id, player_id_1: pid, player_id_2: null,
-        })))
-        .select("id, player_id_1");
-      if (error) {
-        setError("Не удалось создать команды: " + error.message);
-        setGeneratingCategoryId(null);
-        return;
-      }
-      (data || []).forEach((t) => teamIdByPlayer.set(t.player_id_1, t.id));
+    function ratingOf(participantId: string): number {
+      if (!isDoublesLike) return players.find((p) => p.id === participantId)?.rating_singles ?? 0;
+      const team = categoryTeams.find((t) => t.id === participantId);
+      if (!team) return 0;
+      const r1 = players.find((p) => p.id === team.player_id_1)?.rating_doubles ?? 0;
+      const r2 = team.player_id_2 ? players.find((p) => p.id === team.player_id_2)?.rating_doubles ?? 0 : 0;
+      return team.player_id_2 ? (r1 + r2) / 2 : r1;
     }
 
     let pools;
@@ -209,14 +338,14 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
         const parsedValue = parseInt(manualValue[category.id] || "", 10);
         const hasValidValue = Number.isFinite(parsedValue) && parsedValue > 0;
 
-        pools = generateSchedule(tournament.format, categoryPlayerIds, {
+        pools = generateSchedule(tournament.format, participantIds, {
           distributionMode: mode,
           groupCount: mode === "manual" && basis === "count" && hasValidValue ? parsedValue : undefined,
           groupSize: mode === "manual" && basis === "size" && hasValidValue ? parsedValue : undefined,
-          getRating: (playerId) => players.find((p) => p.id === playerId)?.rating_singles ?? 0,
+          getRating: ratingOf,
         });
       } else {
-        pools = generateSchedule(tournament.format, categoryPlayerIds);
+        pools = generateSchedule(tournament.format, participantIds);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Не удалось сгенерировать сетку.");
@@ -231,8 +360,8 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
           category_id: category.id,
           round: idx + 1,
           group_number: pool.groupNumber,
-          team_a_id: teamIdByPlayer.get(a)!,
-          team_b_id: teamIdByPlayer.get(b)!,
+          team_a_id: teamIdByParticipant.get(a)!,
+          team_b_id: teamIdByParticipant.get(b)!,
           status: "pending",
         }))
       )
@@ -310,6 +439,23 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
               ? players.filter((p) => !registeredPlayerIds.has(p.id) && p.full_name.toLowerCase().includes(search)).slice(0, 8)
               : [];
 
+            const isDoublesLike = category.match_category !== "singles";
+            const categoryTeams = teams.filter((t) => t.category_id === category.id);
+            const pendingTeams = isDoublesLike ? categoryTeams.filter((t) => !t.player_id_2) : [];
+            const completeTeams = isDoublesLike ? categoryTeams.filter((t) => t.player_id_2) : [];
+            const hasPending = pendingTeams.length > 0;
+            const participantCount = isDoublesLike ? completeTeams.length : categoryRegistrations.length;
+
+            const pending = pendingRegistration[category.id];
+            const partnerSearch = (partnerSearchByCategory[category.id] || "").trim().toLowerCase();
+            const partnerSearchResults = pending && partnerSearch
+              ? players.filter((p) => !registeredPlayerIds.has(p.id) && p.id !== pending.playerId && p.full_name.toLowerCase().includes(partnerSearch)).slice(0, 8)
+              : [];
+
+            const selectedPairIds = selectedForPairing[category.id] || [];
+            const oddOneOut = pendingTeams.length % 2 === 1 ? pendingTeams[pendingTeams.length - 1] : null;
+            const otherPendingForOddOneOut = oddOneOut ? pendingTeams.filter((t) => t.id !== oddOneOut.id) : [];
+
             const categoryMatches = matches.filter((m) => m.category_id === category.id);
             const groupsMap = new Map<number | null, Match[]>();
             categoryMatches.forEach((m) => {
@@ -337,11 +483,20 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                   <div className="border border-black/5 rounded-lg overflow-hidden mb-4">
                     {categoryRegistrations.map((r, i) => {
                       const player = players.find((p) => p.id === r.player_id);
+                      const team = isDoublesLike ? categoryTeams.find((t) => t.player_id_1 === r.player_id || t.player_id_2 === r.player_id) : undefined;
+                      const partnerName = team?.player_id_2
+                        ? players.find((p) => p.id === (team.player_id_1 === r.player_id ? team.player_id_2 : team.player_id_1))?.full_name
+                        : undefined;
                       return (
                         <div key={r.id} className={"flex items-center justify-between px-4 py-2.5 " + (i !== categoryRegistrations.length - 1 ? "border-b border-black/5" : "")}>
-                          <span className="text-ink text-sm">{player?.full_name || "Неизвестный игрок"}</span>
+                          <span className="text-ink text-sm">
+                            {player?.full_name || "Неизвестный игрок"}
+                            {isDoublesLike && (
+                              <span className="text-xs text-slateGray"> · {partnerName ? `в паре с ${partnerName}` : "ищет напарника"}</span>
+                            )}
+                          </span>
                           {!isLocked && (
-                            <button onClick={() => handleRemovePlayer(r.id)} className="text-xs text-slateGray hover:text-shuttle transition">Убрать</button>
+                            <button onClick={() => handleRemovePlayer(r)} className="text-xs text-slateGray hover:text-shuttle transition">Убрать</button>
                           )}
                         </div>
                       );
@@ -353,6 +508,41 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                   <p className="text-xs text-slateGray">Состав закрыт — сетка сгенерирована. Удалите сетку, чтобы изменить состав.</p>
                 ) : isFull ? (
                   <p className="text-xs text-shuttle">Достигнут лимит участников турнира.</p>
+                ) : pending ? (
+                  <div>
+                    {!pending.awaitingPartner ? (
+                      <div className="flex items-center justify-between bg-courtLine/60 rounded-lg px-4 py-3">
+                        <span className="text-sm text-ink">Напарник для «{pending.playerName}»?</span>
+                        <div className="flex gap-2">
+                          <button onClick={() => handleRegisterSolo(category.id, pending.playerId)} className="text-xs px-3 py-1.5 rounded-lg bg-white border border-black/10 hover:border-court transition">Ищу напарника</button>
+                          <button onClick={() => setPendingRegistration((prev) => ({ ...prev, [category.id]: { ...pending, awaitingPartner: true } }))} className="text-xs px-3 py-1.5 rounded-lg bg-shuttle text-white hover:bg-shuttle/90 transition">Есть напарник</button>
+                          <button onClick={() => setPendingRegistration((prev) => { const next = { ...prev }; delete next[category.id]; return next; })} className="text-xs text-slateGray hover:text-shuttle transition">Отмена</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <p className="text-sm text-ink mb-2">Напарник для «{pending.playerName}»:</p>
+                        <input
+                          type="text"
+                          value={partnerSearchByCategory[category.id] || ""}
+                          onChange={(e) => setPartnerSearchByCategory((prev) => ({ ...prev, [category.id]: e.target.value }))}
+                          placeholder="Поиск напарника по имени..."
+                          className="w-full border border-black/10 rounded-lg px-4 py-2 text-sm outline-none focus:border-court"
+                        />
+                        {partnerSearchResults.length > 0 && (
+                          <div className="border border-black/5 rounded-lg mt-2 overflow-hidden">
+                            {partnerSearchResults.map((p, i) => (
+                              <div key={p.id} className={"flex items-center justify-between px-4 py-2 " + (i !== partnerSearchResults.length - 1 ? "border-b border-black/5" : "")}>
+                                <span className="text-ink text-sm">{p.full_name}</span>
+                                <button onClick={() => handleRegisterPair(category.id, pending.playerId, p.id)} className="text-xs text-shuttle hover:text-shuttle/70 transition font-medium">+ Добавить пару</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <button onClick={() => setPendingRegistration((prev) => { const next = { ...prev }; delete next[category.id]; return next; })} className="text-xs text-slateGray hover:text-shuttle transition mt-2">Отмена</button>
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div>
                     <input
@@ -368,13 +558,110 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                           <div key={p.id} className={"flex items-center justify-between px-4 py-2 " + (i !== searchResults.length - 1 ? "border-b border-black/5" : "")}>
                             <span className="text-ink text-sm">{p.full_name}</span>
                             <button
-                              onClick={() => { handleAddPlayer(category.id, p.id); setSearchByCategory((prev) => ({ ...prev, [category.id]: "" })); }}
+                              onClick={() => {
+                                if (isDoublesLike) {
+                                  setPendingRegistration((prev) => ({ ...prev, [category.id]: { playerId: p.id, playerName: p.full_name, awaitingPartner: false } }));
+                                  setSearchByCategory((prev) => ({ ...prev, [category.id]: "" }));
+                                } else {
+                                  handleAddPlayer(category.id, p.id);
+                                  setSearchByCategory((prev) => ({ ...prev, [category.id]: "" }));
+                                }
+                              }}
                               className="text-xs text-shuttle hover:text-shuttle/70 transition font-medium"
                             >
                               + Добавить
                             </button>
                           </div>
                         ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {!isLocked && isDoublesLike && pendingTeams.length > 0 && (
+                  <div className="mt-4 bg-yellow-50 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="text-sm font-semibold text-ink">Ищут напарника ({pendingTeams.length})</h3>
+                      <button onClick={() => handleAutoPairAll(category.id)} className="text-xs px-3 py-1.5 rounded-lg bg-shuttle text-white hover:bg-shuttle/90 transition">Сформировать пары автоматически</button>
+                    </div>
+
+                    <div className="space-y-1.5 mb-3">
+                      {pendingTeams.filter((t) => t.id !== oddOneOut?.id).map((t) => {
+                        const playerName = players.find((p) => p.id === t.player_id_1)?.full_name || "—";
+                        const checked = selectedPairIds.includes(t.player_id_1);
+                        return (
+                          <label key={t.id} className="flex items-center gap-2 text-sm text-ink bg-white rounded-lg px-3 py-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => setSelectedForPairing((prev) => {
+                                const current = prev[category.id] || [];
+                                if (checked) return { ...prev, [category.id]: current.filter((id) => id !== t.player_id_1) };
+                                if (current.length >= 2) return prev;
+                                return { ...prev, [category.id]: [...current, t.player_id_1] };
+                              })}
+                            />
+                            {playerName}
+                          </label>
+                        );
+                      })}
+                    </div>
+
+                    <button
+                      onClick={() => { if (selectedPairIds.length === 2) handleForcePair(category.id, selectedPairIds[0], selectedPairIds[1]); }}
+                      disabled={selectedPairIds.length !== 2}
+                      className="text-xs px-3 py-1.5 rounded-lg bg-court text-white hover:bg-court/90 transition disabled:opacity-40 mb-3"
+                    >
+                      Создать пару из выбранных
+                    </button>
+
+                    {oddOneOut && (
+                      <div className="border-t border-black/10 pt-3">
+                        <p className="text-sm text-ink mb-2">
+                          {players.find((p) => p.id === oddOneOut.player_id_1)?.full_name || "—"} — <span className="text-shuttle font-medium">без пары</span>
+                        </p>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <select
+                            value={oddOneOutTarget[category.id] || ""}
+                            onChange={(e) => setOddOneOutTarget((prev) => ({ ...prev, [category.id]: e.target.value }))}
+                            className="border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-court bg-white"
+                          >
+                            <option value="">Назначить напарника...</option>
+                            {otherPendingForOddOneOut.map((t) => (
+                              <option key={t.player_id_1} value={t.player_id_1}>
+                                {players.find((p) => p.id === t.player_id_1)?.full_name} (без пары)
+                              </option>
+                            ))}
+                            {completeTeams.flatMap((t) => [
+                              <option key={t.player_id_1} value={t.player_id_1}>
+                                {players.find((p) => p.id === t.player_id_1)?.full_name} (в паре)
+                              </option>,
+                              <option key={t.player_id_2!} value={t.player_id_2!}>
+                                {players.find((p) => p.id === t.player_id_2)?.full_name} (в паре)
+                              </option>,
+                            ])}
+                          </select>
+                          <button
+                            onClick={() => {
+                              const targetId = oddOneOutTarget[category.id];
+                              if (!targetId) return;
+                              const targetInPair = completeTeams.some((t) => t.player_id_1 === targetId || t.player_id_2 === targetId);
+                              if (targetInPair && !window.confirm("Это расформирует существующую пару. Продолжить?")) return;
+                              handleForcePair(category.id, oddOneOut.player_id_1, targetId);
+                              setOddOneOutTarget((prev) => { const next = { ...prev }; delete next[category.id]; return next; });
+                            }}
+                            disabled={!oddOneOutTarget[category.id]}
+                            className="text-xs px-3 py-2 rounded-lg bg-court text-white hover:bg-court/90 transition disabled:opacity-40"
+                          >
+                            Назначить
+                          </button>
+                          <button
+                            onClick={() => handleRemovePlayer({ id: categoryRegistrations.find((r) => r.player_id === oddOneOut.player_id_1)!.id, category_id: category.id, player_id: oddOneOut.player_id_1 })}
+                            className="text-xs text-slateGray hover:text-shuttle transition"
+                          >
+                            Убрать из категории
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -422,7 +709,9 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                         })}
                       </div>
                     </div>
-                  ) : categoryRegistrations.length >= 2 ? (
+                  ) : hasPending ? (
+                    <p className="text-xs text-shuttle">Не все игроки распределены по парам.</p>
+                  ) : participantCount >= 2 ? (
                     (() => {
                       const isGroups = tournament.format === "groups";
                       const mode = distributionMode[category.id] ?? "auto";
@@ -435,15 +724,16 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
 
                       const previewSizes = isGroups
                         ? resolveGroupSizes(
-                            categoryRegistrations.length,
+                            participantCount,
                             mode === "manual" && basis === "count" && hasValidValue ? parsedValue : undefined,
                             mode === "manual" && basis === "size" && hasValidValue ? parsedValue : undefined
                           )
                         : [];
+                      const participantWord = isDoublesLike ? "пар" : "игроков";
                       const previewText = previewSizes.length
                         ? previewSizes.every((s) => s === previewSizes[0])
-                          ? `${categoryRegistrations.length} игроков → ${previewSizes.length} ${previewSizes.length === 1 ? "группа" : "группы"} по ${previewSizes[0]}`
-                          : `${categoryRegistrations.length} игроков → ${previewSizes.length} групп (${previewSizes.join(", ")})`
+                          ? `${participantCount} ${participantWord} → ${previewSizes.length} ${previewSizes.length === 1 ? "группа" : "группы"} по ${previewSizes[0]}`
+                          : `${participantCount} ${participantWord} → ${previewSizes.length} групп (${previewSizes.join(", ")})`
                         : "";
 
                       return (
@@ -509,7 +799,11 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                       );
                     })()
                   ) : (
-                    <p className="text-xs text-slateGray">Нужно минимум 2 зарегистрированных игрока, чтобы сгенерировать сетку.</p>
+                    <p className="text-xs text-slateGray">
+                      {isDoublesLike
+                        ? "Нужно минимум 2 сформированные пары, чтобы сгенерировать сетку."
+                        : "Нужно минимум 2 зарегистрированных игрока, чтобы сгенерировать сетку."}
+                    </p>
                   )}
                 </div>
               </div>

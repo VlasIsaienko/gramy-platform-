@@ -89,7 +89,8 @@ export function splitIntoGroups<T>(participants: T[], targetSize = 4): T[][] {
   return groups;
 }
 
-function shuffle<T>(items: T[]): T[] {
+/** Fisher-Yates shuffle. Публичный — переиспользуется и вне генератора сетки (например, для авто-формирования пар). */
+export function shuffle<T>(items: T[]): T[] {
   const arr = [...items];
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
