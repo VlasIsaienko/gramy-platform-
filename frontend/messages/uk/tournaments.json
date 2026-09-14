@@ -1,0 +1,47 @@
+{
+  "overview": {
+    "title": "Панель організатора",
+    "subtitle": "Це покроковий шлях, який проходить організатор турніру в graMY.",
+    "steps": [
+      "Створити турнір",
+      "Додати гравців (до 72)",
+      "Вибрати формат (Olympic / Round Robin / Groups)",
+      "Згенерувати сітку",
+      "Підкоригувати сітку",
+      "Підтвердити раунд (Approve Round)",
+      "Ввести результати матчів",
+      "Закрити раунд (Close Round)",
+      "Згенерувати наступний раунд",
+      "Завершити турнір (Finish Tournament)",
+      "Перерахувати рейтинг кожного гравця"
+    ]
+  },
+  "title": "Турніри",
+  "createButton": "+ Створити турнір",
+  "newTournament": "Новий турнір",
+  "name": "Назва",
+  "namePlaceholder": "Наприклад: Відкритий чемпіонат клубу",
+  "date": "Дата",
+  "format": "Формат",
+  "category": "Категорія",
+  "createSubmit": "Створити турнір",
+  "empty": "Немає турнірів. Створи перший вище.",
+  "open": "Відкрити →",
+  "loadError": "Не вдалося завантажити турніри: {message}",
+  "createError": "Не вдалося створити турнір: {message}",
+  "deleteError": "Не вдалося видалити: {message}",
+  "deleteConfirm": "Видалити цей турнір?",
+  "pastDateError": "Дата турніру не може бути в минулому. Обери сьогоднішню дату або пізнішу.",
+  "formatOptions": {
+    "olympic": "Olympic / Single Elimination",
+    "round_robin": "Round Robin / Кругова",
+    "groups": "Groups / Групова",
+    "mexicano": "Mexicano",
+    "americano": "Americano"
+  },
+  "status": {
+    "draft": "Чернетка",
+    "active": "Активний",
+    "finished": "Завершений"
+  }
+}

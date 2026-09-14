@@ -1,0 +1,41 @@
+{
+  "appTitle": "graMY — tournament & rating platform",
+  "appDescription": "Tournaments, brackets, scores and individual ratings for amateur sport",
+  "nav": {
+    "brand": "graMY",
+    "brandSuffix": "admin",
+    "overview": "Overview",
+    "tournaments": "Tournaments",
+    "players": "Players",
+    "rating": "Rating",
+    "logout": "Log out"
+  },
+  "actions": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "edit": "Edit",
+    "delete": "Delete",
+    "add": "Add",
+    "saving": "Saving...",
+    "loading": "Loading..."
+  },
+  "language": {
+    "switcherLabel": "Interface language",
+    "pl": "Polski",
+    "ru": "Русский",
+    "uk": "Українська",
+    "en": "English"
+  },
+  "formats": {
+    "olympic": "Olympic",
+    "round_robin": "Round Robin",
+    "groups": "Groups",
+    "mexicano": "Mexicano",
+    "americano": "Americano"
+  },
+  "matchCategories": {
+    "singles": "Singles",
+    "doubles": "Doubles",
+    "mixed": "Mixed"
+  }
+}

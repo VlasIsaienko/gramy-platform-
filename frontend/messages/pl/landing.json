@@ -1,0 +1,14 @@
+{
+  "tagline": "Platforma turniejów amatorskich i rankingu",
+  "organizerCta": "Jestem organizatorem / klubem",
+  "playerCta": "Jestem zawodnikiem",
+  "player": {
+    "badge": "profil zawodnika",
+    "myRating": "Mój ranking",
+    "ratingHint": "Ranking zmieni się po pierwszym turnieju",
+    "myTournaments": "Moje turnieje",
+    "myMatches": "Moje mecze",
+    "registerCta": "Zapisz się na turniej",
+    "stubNote": "(Wersja robocza. Kolejny krok — podłączyć tabele <code>players</code> i <code>registrations</code> z Supabase.)"
+  }
+}

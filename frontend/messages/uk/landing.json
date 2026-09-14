@@ -1,0 +1,14 @@
+{
+  "tagline": "Платформа аматорських турнірів і рейтингу",
+  "organizerCta": "Я організатор / клуб",
+  "playerCta": "Я гравець",
+  "player": {
+    "badge": "профіль гравця",
+    "myRating": "Мій рейтинг",
+    "ratingHint": "Рейтинг зміниться після першого турніру",
+    "myTournaments": "Мої турніри",
+    "myMatches": "Мої матчі",
+    "registerCta": "Зареєструватися на турнір",
+    "stubNote": "(Заготовка. Наступний крок — підключити таблиці <code>players</code> і <code>registrations</code> із Supabase.)"
+  }
+}

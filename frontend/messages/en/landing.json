@@ -1,0 +1,14 @@
+{
+  "tagline": "Platform for amateur tournaments and ratings",
+  "organizerCta": "I'm an organizer / club",
+  "playerCta": "I'm a player",
+  "player": {
+    "badge": "player profile",
+    "myRating": "My rating",
+    "ratingHint": "Your rating will change after your first tournament",
+    "myTournaments": "My tournaments",
+    "myMatches": "My matches",
+    "registerCta": "Register for a tournament",
+    "stubNote": "(Draft. Next step — connect the <code>players</code> and <code>registrations</code> tables from Supabase.)"
+  }
+}

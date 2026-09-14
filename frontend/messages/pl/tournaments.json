@@ -1,0 +1,47 @@
+{
+  "overview": {
+    "title": "Panel organizatora",
+    "subtitle": "To jest krok po kroku ścieżka, którą przechodzi organizator turnieju w graMY.",
+    "steps": [
+      "Utwórz turniej",
+      "Dodaj zawodników (do 72)",
+      "Wybierz format (Olympic / Round Robin / Groups)",
+      "Wygeneruj drabinkę",
+      "Popraw drabinkę",
+      "Zatwierdź rundę (Approve Round)",
+      "Wprowadź wyniki meczów",
+      "Zamknij rundę (Close Round)",
+      "Wygeneruj kolejną rundę",
+      "Zakończ turniej (Finish Tournament)",
+      "Przelicz ranking każdego zawodnika"
+    ]
+  },
+  "title": "Turnieje",
+  "createButton": "+ Utwórz turniej",
+  "newTournament": "Nowy turniej",
+  "name": "Nazwa",
+  "namePlaceholder": "Np.: Otwarte mistrzostwa klubu",
+  "date": "Data",
+  "format": "Format",
+  "category": "Kategoria",
+  "createSubmit": "Utwórz turniej",
+  "empty": "Brak turniejów. Utwórz pierwszy powyżej.",
+  "open": "Otwórz →",
+  "loadError": "Nie udało się załadować turniejów: {message}",
+  "createError": "Nie udało się utworzyć turnieju: {message}",
+  "deleteError": "Nie udało się usunąć: {message}",
+  "deleteConfirm": "Usunąć ten turniej?",
+  "pastDateError": "Data turnieju nie może być w przeszłości. Wybierz dzisiejszą datę lub późniejszą.",
+  "formatOptions": {
+    "olympic": "Olympic / Single Elimination",
+    "round_robin": "Round Robin",
+    "groups": "Groups / Grupowy",
+    "mexicano": "Mexicano",
+    "americano": "Americano"
+  },
+  "status": {
+    "draft": "Szkic",
+    "active": "Aktywny",
+    "finished": "Zakończony"
+  }
+}

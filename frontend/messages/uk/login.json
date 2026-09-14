@@ -1,0 +1,8 @@
+{
+  "title": "Вхід в адмінку",
+  "email": "Email",
+  "password": "Пароль",
+  "signIn": "Увійти",
+  "signingIn": "Входжу...",
+  "invalidCredentials": "Невірний email або пароль."
+}

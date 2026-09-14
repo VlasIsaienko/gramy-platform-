@@ -1,0 +1,5 @@
+{
+  "title": "Rating",
+  "stubMessage": "The club's overall rating will appear here once the first tournament is finished.",
+  "stubNote": "(Draft. Computed from the <code>ratings</code> and <code>rating_history</code> tables, using functions from <code>lib/elo.ts</code>.)"
+}

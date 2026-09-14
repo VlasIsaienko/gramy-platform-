@@ -1,0 +1,15 @@
+{
+  "title": "Players",
+  "namePlaceholder": "Player's full name",
+  "addButton": "+ Add",
+  "saving": "Saving...",
+  "loading": "Loading players...",
+  "empty": "No players yet. Add the first one above.",
+  "rating": "Rating: {rating}",
+  "deleteButton": "Delete",
+  "deleteConfirm": "Delete this player?",
+  "loadError": "Failed to load players: {message}",
+  "addError": "Failed to add player: {message}",
+  "deleteError": "Failed to delete player: {message}",
+  "storageNote": "Players are saved directly to the Supabase database (table <code>players</code>)."
+}

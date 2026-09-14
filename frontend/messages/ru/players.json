@@ -1,0 +1,15 @@
+{
+  "title": "Игроки",
+  "namePlaceholder": "Имя и фамилия игрока",
+  "addButton": "+ Добавить",
+  "saving": "Сохраняю...",
+  "loading": "Загрузка списка игроков...",
+  "empty": "Пока нет ни одного игрока. Добавь первого выше.",
+  "rating": "Рейтинг: {rating}",
+  "deleteButton": "Удалить",
+  "deleteConfirm": "Удалить этого игрока?",
+  "loadError": "Не удалось загрузить игроков: {message}",
+  "addError": "Не удалось добавить игрока: {message}",
+  "deleteError": "Не удалось удалить игрока: {message}",
+  "storageNote": "Игроки сохраняются напрямую в базу данных Supabase (таблица <code>players</code>)."
+}

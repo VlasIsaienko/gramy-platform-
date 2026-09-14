@@ -1,0 +1,8 @@
+{
+  "title": "Logowanie do panelu",
+  "email": "Email",
+  "password": "Hasło",
+  "signIn": "Zaloguj się",
+  "signingIn": "Logowanie...",
+  "invalidCredentials": "Nieprawidłowy email lub hasło."
+}

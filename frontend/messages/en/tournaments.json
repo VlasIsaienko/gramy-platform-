@@ -1,0 +1,47 @@
+{
+  "overview": {
+    "title": "Organizer panel",
+    "subtitle": "This is the step-by-step path an organizer follows in graMY.",
+    "steps": [
+      "Create a tournament",
+      "Add players (up to 72)",
+      "Choose a format (Olympic / Round Robin / Groups)",
+      "Generate the bracket",
+      "Adjust the bracket",
+      "Approve the round",
+      "Enter match results",
+      "Close the round",
+      "Generate the next round",
+      "Finish the tournament",
+      "Recalculate every player's rating"
+    ]
+  },
+  "title": "Tournaments",
+  "createButton": "+ Create tournament",
+  "newTournament": "New tournament",
+  "name": "Name",
+  "namePlaceholder": "E.g.: Open club championship",
+  "date": "Date",
+  "format": "Format",
+  "category": "Category",
+  "createSubmit": "Create tournament",
+  "empty": "No tournaments yet. Create the first one above.",
+  "open": "Open →",
+  "loadError": "Failed to load tournaments: {message}",
+  "createError": "Failed to create tournament: {message}",
+  "deleteError": "Failed to delete: {message}",
+  "deleteConfirm": "Delete this tournament?",
+  "pastDateError": "The tournament date can't be in the past. Choose today's date or a later one.",
+  "formatOptions": {
+    "olympic": "Olympic / Single Elimination",
+    "round_robin": "Round Robin",
+    "groups": "Groups",
+    "mexicano": "Mexicano",
+    "americano": "Americano"
+  },
+  "status": {
+    "draft": "Draft",
+    "active": "Active",
+    "finished": "Finished"
+  }
+}

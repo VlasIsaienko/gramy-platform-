@@ -1,0 +1,15 @@
+{
+  "title": "Zawodnicy",
+  "namePlaceholder": "Imię i nazwisko zawodnika",
+  "addButton": "+ Dodaj",
+  "saving": "Zapisywanie...",
+  "loading": "Ładowanie listy zawodników...",
+  "empty": "Nie ma jeszcze żadnego zawodnika. Dodaj pierwszego powyżej.",
+  "rating": "Ranking: {rating}",
+  "deleteButton": "Usuń",
+  "deleteConfirm": "Usunąć tego zawodnika?",
+  "loadError": "Nie udało się załadować zawodników: {message}",
+  "addError": "Nie udało się dodać zawodnika: {message}",
+  "deleteError": "Nie udało się usunąć zawodnika: {message}",
+  "storageNote": "Zawodnicy są zapisywani bezpośrednio w bazie danych Supabase (tabela <code>players</code>)."
+}

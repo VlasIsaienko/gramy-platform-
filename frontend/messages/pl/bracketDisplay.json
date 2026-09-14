@@ -1,0 +1,17 @@
+{
+  "court": "Kort {number}",
+  "errors": {
+    "enterScore": "Wpisz wynik obu stron.",
+    "enterSetScore": "Wpisz wynik seta."
+  },
+  "scoreErrors": {
+    "invalidNumber": "Wynik musi być nieujemną liczbą całkowitą.",
+    "tied": "Wynik nie może być remisowy — potrzebny jest zwycięzca.",
+    "tooHigh": "Wynik nie może przekraczać 16 punktów.",
+    "unfinished": "Niezakończony wynik: gra do 15 (przewaga ≥2) lub do limitu 16."
+  },
+  "saveResult": "Zapisz wynik",
+  "saveSet": "Zapisz seta",
+  "setNumber": "Set {number}:",
+  "setScore": "Set {number}: {a}:{b}"
+}

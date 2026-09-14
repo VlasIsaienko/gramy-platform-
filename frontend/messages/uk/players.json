@@ -1,0 +1,15 @@
+{
+  "title": "Гравці",
+  "namePlaceholder": "Ім'я та прізвище гравця",
+  "addButton": "+ Додати",
+  "saving": "Зберігаю...",
+  "loading": "Завантаження списку гравців...",
+  "empty": "Поки немає жодного гравця. Додай першого вище.",
+  "rating": "Рейтинг: {rating}",
+  "deleteButton": "Видалити",
+  "deleteConfirm": "Видалити цього гравця?",
+  "loadError": "Не вдалося завантажити гравців: {message}",
+  "addError": "Не вдалося додати гравця: {message}",
+  "deleteError": "Не вдалося видалити гравця: {message}",
+  "storageNote": "Гравці зберігаються напряму в базу даних Supabase (таблиця <code>players</code>)."
+}

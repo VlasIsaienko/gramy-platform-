@@ -1,0 +1,41 @@
+{
+  "appTitle": "graMY — platforma turniejów i rankingu",
+  "appDescription": "Turnieje, drabinki, wynik i indywidualny ranking dla sportu amatorskiego",
+  "nav": {
+    "brand": "graMY",
+    "brandSuffix": "admin",
+    "overview": "Przegląd",
+    "tournaments": "Turnieje",
+    "players": "Zawodnicy",
+    "rating": "Ranking",
+    "logout": "Wyloguj"
+  },
+  "actions": {
+    "save": "Zapisz",
+    "cancel": "Anuluj",
+    "edit": "Zmień",
+    "delete": "Usuń",
+    "add": "Dodaj",
+    "saving": "Zapisywanie...",
+    "loading": "Ładowanie..."
+  },
+  "language": {
+    "switcherLabel": "Język interfejsu",
+    "pl": "Polski",
+    "ru": "Русский",
+    "uk": "Українська",
+    "en": "English"
+  },
+  "formats": {
+    "olympic": "Olympic",
+    "round_robin": "Round Robin",
+    "groups": "Groups",
+    "mexicano": "Mexicano",
+    "americano": "Americano"
+  },
+  "matchCategories": {
+    "singles": "Gra pojedyncza",
+    "doubles": "Gra podwójna",
+    "mixed": "Mikst"
+  }
+}

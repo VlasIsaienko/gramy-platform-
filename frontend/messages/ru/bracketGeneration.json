@@ -1,0 +1,43 @@
+{
+  "errors": {
+    "unsupportedFormat": "Формат \"{format}\" пока не поддерживается генератором сетки.",
+    "fillAllSlots": "Заполните все позиции сетки перед генерацией.",
+    "notMultipleOfFour": "Число игроков должно быть кратно 4 для формата Mexicano/Americano, сейчас: {count}.",
+    "enterRoundsCount": "Укажите число раундов.",
+    "generic": "Не удалось сгенерировать сетку.",
+    "genericRound": "Не удалось сгенерировать раунд."
+  },
+  "seeding": {
+    "auto": "Авто",
+    "random": "Случайно",
+    "manual": "Вручную"
+  },
+  "generateBracket": "Сгенерировать сетку",
+  "generating": "Генерирую...",
+  "generateNextRound": "Сгенерировать следующий раунд",
+  "generateRoundN": "Сгенерировать раунд {round}",
+  "roundsCount": "Число раундов",
+  "playersToCourts": "{count} игроков → {courts} {courts, plural, =1 {корт} other {корта}}",
+  "thirdPlaceMatch": "Играть матч за 3-е место",
+  "slotPosition": "Позиция {position}",
+  "olympicPreview": "{count} {word} → сетка на {size}",
+  "participantWord": {
+    "pairs": "пар",
+    "players": "игроков"
+  },
+  "groupsManual": {
+    "basisLabel": "Параметр",
+    "basisSize": "Размер группы",
+    "basisCount": "Число групп",
+    "playersPerGroup": "Игроков в группе",
+    "groupsCount": "Групп"
+  },
+  "groupsPreviewEven": "{count} {word} → {groups} {groupWord} по {size}",
+  "groupsPreviewUneven": "{count} {word} → {groups} групп ({sizes})",
+  "groupWord": {
+    "one": "группа",
+    "few": "группы"
+  },
+  "needAtLeastTwoPairs": "Нужно минимум 2 сформированные пары, чтобы сгенерировать сетку.",
+  "needAtLeastTwoPlayers": "Нужно минимум 2 зарегистрированных игрока, чтобы сгенерировать сетку."
+}

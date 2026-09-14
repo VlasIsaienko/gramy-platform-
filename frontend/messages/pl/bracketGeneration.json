@@ -1,0 +1,43 @@
+{
+  "errors": {
+    "unsupportedFormat": "Format \"{format}\" nie jest jeszcze obsługiwany przez generator drabinek.",
+    "fillAllSlots": "Wypełnij wszystkie pozycje drabinki przed generacją.",
+    "notMultipleOfFour": "Liczba zawodników musi być wielokrotnością 4 dla formatu Mexicano/Americano, obecnie: {count}.",
+    "enterRoundsCount": "Podaj liczbę rund.",
+    "generic": "Nie udało się wygenerować drabinki.",
+    "genericRound": "Nie udało się wygenerować rundy."
+  },
+  "seeding": {
+    "auto": "Auto",
+    "random": "Losowo",
+    "manual": "Ręcznie"
+  },
+  "generateBracket": "Wygeneruj drabinkę",
+  "generating": "Generowanie...",
+  "generateNextRound": "Wygeneruj kolejną rundę",
+  "generateRoundN": "Wygeneruj rundę {round}",
+  "roundsCount": "Liczba rund",
+  "playersToCourts": "{count} zawodników → {courts} {courts, plural, =1 {kort} other {korty}}",
+  "thirdPlaceMatch": "Rozegraj mecz o 3. miejsce",
+  "slotPosition": "Pozycja {position}",
+  "olympicPreview": "{count} {word} → drabinka na {size}",
+  "participantWord": {
+    "pairs": "par",
+    "players": "zawodników"
+  },
+  "groupsManual": {
+    "basisLabel": "Parametr",
+    "basisSize": "Rozmiar grupy",
+    "basisCount": "Liczba grup",
+    "playersPerGroup": "Zawodników w grupie",
+    "groupsCount": "Grup"
+  },
+  "groupsPreviewEven": "{count} {word} → {groups} {groupWord} po {size}",
+  "groupsPreviewUneven": "{count} {word} → {groups} grup ({sizes})",
+  "groupWord": {
+    "one": "grupa",
+    "few": "grupy"
+  },
+  "needAtLeastTwoPairs": "Potrzeba minimum 2 utworzonych par, aby wygenerować drabinkę.",
+  "needAtLeastTwoPlayers": "Potrzeba minimum 2 zarejestrowanych zawodników, aby wygenerować drabinkę."
+}

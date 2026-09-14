@@ -1,18 +1,20 @@
 "use client";
 
-import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
+import { Link, useRouter } from "@/i18n/navigation";
 import { supabase } from "@/lib/supabaseClient";
-
-const links = [
-  { href: "/admin", label: "Обзор" },
-  { href: "/admin/tournaments", label: "Турниры" },
-  { href: "/admin/players", label: "Игроки" },
-  { href: "/admin/rating", label: "Рейтинг" },
-];
+import LanguageSwitcher from "./LanguageSwitcher";
 
 export default function AdminNav() {
   const router = useRouter();
+  const t = useTranslations("common");
+
+  const links = [
+    { href: "/admin", label: t("nav.overview") },
+    { href: "/admin/tournaments", label: t("nav.tournaments") },
+    { href: "/admin/players", label: t("nav.players") },
+    { href: "/admin/rating", label: t("nav.rating") },
+  ];
 
   async function handleLogout() {
     await supabase.auth.signOut();
@@ -24,7 +26,7 @@ export default function AdminNav() {
     <nav className="w-full border-b border-black/10 bg-white">
       <div className="max-w-5xl mx-auto flex items-center justify-between px-6 py-4">
         <Link href="/" className="font-display font-bold text-court text-xl">
-          graMY <span className="text-shuttle">/ admin</span>
+          {t("nav.brand")} <span className="text-shuttle">/ {t("nav.brandSuffix")}</span>
         </Link>
         <div className="flex items-center gap-6">
           {links.map((l) => (
@@ -36,11 +38,12 @@ export default function AdminNav() {
               {l.label}
             </Link>
           ))}
+          <LanguageSwitcher />
           <button
             onClick={handleLogout}
             className="text-sm text-slateGray hover:text-shuttle transition"
           >
-            Выйти
+            {t("nav.logout")}
           </button>
         </div>
       </div>

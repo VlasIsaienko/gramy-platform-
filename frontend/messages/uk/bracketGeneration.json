@@ -1,0 +1,43 @@
+{
+  "errors": {
+    "unsupportedFormat": "Формат \"{format}\" поки не підтримується генератором сітки.",
+    "fillAllSlots": "Заповніть усі позиції сітки перед генерацією.",
+    "notMultipleOfFour": "Кількість гравців має бути кратною 4 для формату Mexicano/Americano, зараз: {count}.",
+    "enterRoundsCount": "Вкажіть кількість раундів.",
+    "generic": "Не вдалося згенерувати сітку.",
+    "genericRound": "Не вдалося згенерувати раунд."
+  },
+  "seeding": {
+    "auto": "Авто",
+    "random": "Випадково",
+    "manual": "Вручну"
+  },
+  "generateBracket": "Згенерувати сітку",
+  "generating": "Генерую...",
+  "generateNextRound": "Згенерувати наступний раунд",
+  "generateRoundN": "Згенерувати раунд {round}",
+  "roundsCount": "Кількість раундів",
+  "playersToCourts": "{count} гравців → {courts} {courts, plural, =1 {корт} other {корти}}",
+  "thirdPlaceMatch": "Грати матч за 3-тє місце",
+  "slotPosition": "Позиція {position}",
+  "olympicPreview": "{count} {word} → сітка на {size}",
+  "participantWord": {
+    "pairs": "пар",
+    "players": "гравців"
+  },
+  "groupsManual": {
+    "basisLabel": "Параметр",
+    "basisSize": "Розмір групи",
+    "basisCount": "Кількість груп",
+    "playersPerGroup": "Гравців у групі",
+    "groupsCount": "Груп"
+  },
+  "groupsPreviewEven": "{count} {word} → {groups} {groupWord} по {size}",
+  "groupsPreviewUneven": "{count} {word} → {groups} груп ({sizes})",
+  "groupWord": {
+    "one": "група",
+    "few": "групи"
+  },
+  "needAtLeastTwoPairs": "Потрібно мінімум 2 сформовані пари, щоб згенерувати сітку.",
+  "needAtLeastTwoPlayers": "Потрібно мінімум 2 зареєстрованих гравця, щоб згенерувати сітку."
+}

@@ -1,0 +1,47 @@
+{
+  "overview": {
+    "title": "Панель организатора",
+    "subtitle": "Это пошаговый путь, который проходит организатор турнира в graMY.",
+    "steps": [
+      "Создать турнир",
+      "Добавить игроков (до 72)",
+      "Выбрать формат (Olympic / Round Robin / Groups)",
+      "Сгенерировать сетку",
+      "Подкорректировать сетку",
+      "Подтвердить раунд (Approve Round)",
+      "Ввести результаты матчей",
+      "Закрыть раунд (Close Round)",
+      "Сгенерировать следующий раунд",
+      "Завершить турнир (Finish Tournament)",
+      "Пересчитать рейтинг каждого игрока"
+    ]
+  },
+  "title": "Турниры",
+  "createButton": "+ Создать турнир",
+  "newTournament": "Новый турнир",
+  "name": "Название",
+  "namePlaceholder": "Например: Открытый чемпионат клуба",
+  "date": "Дата",
+  "format": "Формат",
+  "category": "Категория",
+  "createSubmit": "Создать турнир",
+  "empty": "Нет турниров. Создай первый выше.",
+  "open": "Открыть →",
+  "loadError": "Не удалось загрузить турниры: {message}",
+  "createError": "Не удалось создать турнир: {message}",
+  "deleteError": "Не удалось удалить: {message}",
+  "deleteConfirm": "Удалить этот турнир?",
+  "pastDateError": "Дата турнира не может быть в прошлом. Выберите сегодняшнюю дату или более позднюю.",
+  "formatOptions": {
+    "olympic": "Olympic / Single Elimination",
+    "round_robin": "Round Robin / Круговая",
+    "groups": "Groups / Групповая",
+    "mexicano": "Mexicano",
+    "americano": "Americano"
+  },
+  "status": {
+    "draft": "Черновик",
+    "active": "Активный",
+    "finished": "Завершён"
+  }
+}

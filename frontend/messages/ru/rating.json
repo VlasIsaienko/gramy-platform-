@@ -1,0 +1,5 @@
+{
+  "title": "Рейтинг",
+  "stubMessage": "Общий рейтинг клуба появится здесь после завершения первого турнира.",
+  "stubNote": "(Заготовка. Считается по таблицам <code>ratings</code> и <code>rating_history</code>, с помощью функций из <code>lib/elo.ts</code>.)"
+}

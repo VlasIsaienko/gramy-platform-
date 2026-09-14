@@ -1,6 +1,18 @@
 // bracket.ts — генерация расписания матчей по формату турнира.
-// Чистая логика без обращений к Supabase, чтобы её было легко переиспользовать
-// и покрыть тестами отдельно от UI.
+// Чистая логика без обращений к Supabase и без доступа к переводам (next-intl),
+// чтобы её было легко переиспользовать и покрыть тестами отдельно от UI —
+// поэтому все ошибки представлены не готовым текстом, а стабильным кодом
+// (+ параметрами для подстановки), которые уже страница переводит через t().
+
+export class BracketError extends Error {
+  code: string;
+  params?: Record<string, string | number>;
+  constructor(code: string, params?: Record<string, string | number>) {
+    super(code);
+    this.code = code;
+    this.params = params;
+  }
+}
 
 export type Round<T> = Array<[T, T]>;
 
@@ -176,7 +188,7 @@ export function generateSchedule<T>(
     case "groups":
       return generateGroupsSchedule(participants, groupsOptions);
     default:
-      throw new Error(`Формат "${format}" пока не поддерживается генератором сетки.`);
+      throw new BracketError("unsupportedFormat", { format });
   }
 }
 
@@ -265,7 +277,7 @@ export function generateOlympicBracket<T>(participants: T[], options?: OlympicSc
   let slots: (T | null)[];
   if (mode === "manual") {
     if (!options?.manualSlots || options.manualSlots.length !== size) {
-      throw new Error("Для ручного посева нужно указать участника или bye для каждой позиции сетки.");
+      throw new BracketError("fillAllSlots");
     }
     slots = options.manualSlots;
   } else if (mode === "random") {
@@ -325,14 +337,21 @@ export function generateNextOlympicRound<T>(
   return { matches, thirdPlace };
 }
 
-/** Понятная подпись раунда для двух последних раундов сетки на выбывание. */
-export function olympicRoundLabel(round: number, totalRounds: number): string {
+/** Понятная подпись раунда для двух последних раундов сетки на выбывание — код + параметры, переводит страница. */
+export type OlympicRoundLabel =
+  | { kind: "final" }
+  | { kind: "semifinal" }
+  | { kind: "quarterfinal" }
+  | { kind: "roundOf16" }
+  | { kind: "numbered"; round: number };
+
+export function olympicRoundLabel(round: number, totalRounds: number): OlympicRoundLabel {
   const roundsFromEnd = totalRounds - round;
-  if (roundsFromEnd === 0) return "Финал";
-  if (roundsFromEnd === 1) return "Полуфинал";
-  if (roundsFromEnd === 2) return "1/4 финала";
-  if (roundsFromEnd === 3) return "1/8 финала";
-  return `Раунд ${round}`;
+  if (roundsFromEnd === 0) return { kind: "final" };
+  if (roundsFromEnd === 1) return { kind: "semifinal" };
+  if (roundsFromEnd === 2) return { kind: "quarterfinal" };
+  if (roundsFromEnd === 3) return { kind: "roundOf16" };
+  return { kind: "numbered", round };
 }
 
 // ============================================================
@@ -347,20 +366,26 @@ export interface MatchPair {
   teamB: string;
 }
 
+export type RoundRobinIssue =
+  | { type: "selfMatch" }
+  | { type: "doubleBooked"; round: number }
+  | { type: "duplicatePair" }
+  | { type: "incomplete" };
+
 /**
  * Проверяет целостность round robin для одной группы/категории:
  * никто не играет дважды в одном раунде, каждая пара участников
  * встречается ровно один раз. Используется только для необязательного
  * предупреждения после ручной правки матча — ничего не блокирует.
  */
-export function checkRoundRobinIntegrity(participantIds: string[], matchPairs: MatchPair[]): string[] {
-  const issues = new Set<string>();
+export function checkRoundRobinIntegrity(participantIds: string[], matchPairs: MatchPair[]): RoundRobinIssue[] {
+  const issueKeys = new Set<string>();
   const pairCounts = new Map<string, number>();
   const roundOccupants = new Map<number, Set<string>>();
 
   for (const { round, teamA, teamB } of matchPairs) {
     if (teamA === teamB) {
-      issues.add("Участник не может играть сам с собой.");
+      issueKeys.add("selfMatch");
       continue;
     }
     const key = [teamA, teamB].sort().join("||");
@@ -368,7 +393,7 @@ export function checkRoundRobinIntegrity(participantIds: string[], matchPairs: M
 
     const occupants = roundOccupants.get(round) ?? new Set<string>();
     if (occupants.has(teamA) || occupants.has(teamB)) {
-      issues.add(`Кто-то играет больше одного матча в раунде ${round}.`);
+      issueKeys.add(`doubleBooked:${round}`);
     }
     occupants.add(teamA);
     occupants.add(teamB);
@@ -376,15 +401,20 @@ export function checkRoundRobinIntegrity(participantIds: string[], matchPairs: M
   }
 
   for (const count of pairCounts.values()) {
-    if (count > 1) issues.add("Какая-то пара играет между собой больше одного раза.");
+    if (count > 1) issueKeys.add("duplicatePair");
   }
 
   const expectedPairs = (participantIds.length * (participantIds.length - 1)) / 2;
   if (pairCounts.size < expectedPairs) {
-    issues.add("Не все участники сыграют друг с другом ровно один раз.");
+    issueKeys.add("incomplete");
   }
 
-  return Array.from(issues);
+  return Array.from(issueKeys).map((key): RoundRobinIssue => {
+    if (key === "selfMatch") return { type: "selfMatch" };
+    if (key === "duplicatePair") return { type: "duplicatePair" };
+    if (key === "incomplete") return { type: "incomplete" };
+    return { type: "doubleBooked", round: parseInt(key.split(":")[1], 10) };
+  });
 }
 
 // ============================================================
@@ -394,30 +424,32 @@ export function checkRoundRobinIntegrity(participantIds: string[], matchPairs: M
 // матч, даже с разницей в 1 очко.
 // ============================================================
 
+export type MatchScoreErrorCode = "invalidNumber" | "tied" | "tooHigh" | "unfinished";
+
 export interface MatchScoreResult {
   valid: boolean;
-  error?: string;
+  errorCode?: MatchScoreErrorCode;
   winner?: "A" | "B";
 }
 
 /** Допустимые финальные счета: 15:X (X=0..13, перевес ≥2), 16:14, 16:15. */
 export function validateMatchScore(scoreA: number, scoreB: number): MatchScoreResult {
   if (!Number.isInteger(scoreA) || !Number.isInteger(scoreB) || scoreA < 0 || scoreB < 0) {
-    return { valid: false, error: "Счёт должен быть неотрицательным целым числом." };
+    return { valid: false, errorCode: "invalidNumber" };
   }
   if (scoreA === scoreB) {
-    return { valid: false, error: "Счёт не может быть равным — нужен победитель." };
+    return { valid: false, errorCode: "tied" };
   }
 
   const leader = Math.max(scoreA, scoreB);
   const trailer = Math.min(scoreA, scoreB);
 
   if (leader > 16) {
-    return { valid: false, error: "Счёт не может превышать 16 очков." };
+    return { valid: false, errorCode: "tooHigh" };
   }
   const isFinished = (leader === 15 && leader - trailer >= 2) || leader === 16;
   if (!isFinished) {
-    return { valid: false, error: "Незавершённый счёт: игра до 15 (перевес ≥2) либо до потолка 16." };
+    return { valid: false, errorCode: "unfinished" };
   }
 
   return { valid: true, winner: scoreA > scoreB ? "A" : "B" };
@@ -454,7 +486,7 @@ export interface Court<T> {
 
 function requireMultipleOfFour(n: number): void {
   if (n % 4 !== 0) {
-    throw new Error(`Число игроков должно быть кратно 4 для формата Mexicano/Americano, сейчас: ${n}`);
+    throw new BracketError("notMultipleOfFour", { count: n });
   }
 }
 

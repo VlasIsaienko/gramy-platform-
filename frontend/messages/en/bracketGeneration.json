@@ -1,0 +1,43 @@
+{
+  "errors": {
+    "unsupportedFormat": "Format \"{format}\" is not yet supported by the bracket generator.",
+    "fillAllSlots": "Fill in all bracket slots before generating.",
+    "notMultipleOfFour": "The number of players must be a multiple of 4 for Mexicano/Americano, currently: {count}.",
+    "enterRoundsCount": "Enter the number of rounds.",
+    "generic": "Failed to generate the bracket.",
+    "genericRound": "Failed to generate the round."
+  },
+  "seeding": {
+    "auto": "Auto",
+    "random": "Random",
+    "manual": "Manual"
+  },
+  "generateBracket": "Generate bracket",
+  "generating": "Generating...",
+  "generateNextRound": "Generate next round",
+  "generateRoundN": "Generate round {round}",
+  "roundsCount": "Number of rounds",
+  "playersToCourts": "{count} players → {courts} {courts, plural, =1 {court} other {courts}}",
+  "thirdPlaceMatch": "Play a 3rd place match",
+  "slotPosition": "Slot {position}",
+  "olympicPreview": "{count} {word} → bracket for {size}",
+  "participantWord": {
+    "pairs": "pairs",
+    "players": "players"
+  },
+  "groupsManual": {
+    "basisLabel": "Parameter",
+    "basisSize": "Group size",
+    "basisCount": "Number of groups",
+    "playersPerGroup": "Players per group",
+    "groupsCount": "Groups"
+  },
+  "groupsPreviewEven": "{count} {word} → {groups} {groupWord} of {size}",
+  "groupsPreviewUneven": "{count} {word} → {groups} groups ({sizes})",
+  "groupWord": {
+    "one": "group",
+    "few": "groups"
+  },
+  "needAtLeastTwoPairs": "Need at least 2 formed pairs to generate the bracket.",
+  "needAtLeastTwoPlayers": "Need at least 2 registered players to generate the bracket."
+}

@@ -1,0 +1,17 @@
+{
+  "court": "Court {number}",
+  "errors": {
+    "enterScore": "Enter the score for both sides.",
+    "enterSetScore": "Enter the set score."
+  },
+  "scoreErrors": {
+    "invalidNumber": "The score must be a non-negative whole number.",
+    "tied": "The score can't be tied — there must be a winner.",
+    "tooHigh": "The score can't exceed 16 points.",
+    "unfinished": "Unfinished score: play to 15 (win by ≥2) or up to a cap of 16."
+  },
+  "saveResult": "Save result",
+  "saveSet": "Save set",
+  "setNumber": "Set {number}:",
+  "setScore": "Set {number}: {a}:{b}"
+}

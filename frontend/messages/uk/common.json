@@ -1,0 +1,41 @@
+{
+  "appTitle": "graMY — платформа турнірів і рейтингу",
+  "appDescription": "Турніри, сітки, рахунок та індивідуальний рейтинг для аматорського спорту",
+  "nav": {
+    "brand": "graMY",
+    "brandSuffix": "admin",
+    "overview": "Огляд",
+    "tournaments": "Турніри",
+    "players": "Гравці",
+    "rating": "Рейтинг",
+    "logout": "Вийти"
+  },
+  "actions": {
+    "save": "Зберегти",
+    "cancel": "Скасувати",
+    "edit": "Змінити",
+    "delete": "Видалити",
+    "add": "Додати",
+    "saving": "Зберігаю...",
+    "loading": "Завантаження..."
+  },
+  "language": {
+    "switcherLabel": "Мова інтерфейсу",
+    "pl": "Polski",
+    "ru": "Русский",
+    "uk": "Українська",
+    "en": "English"
+  },
+  "formats": {
+    "olympic": "Olympic",
+    "round_robin": "Round Robin",
+    "groups": "Groups",
+    "mexicano": "Mexicano",
+    "americano": "Americano"
+  },
+  "matchCategories": {
+    "singles": "Одиночний",
+    "doubles": "Парний",
+    "mixed": "Мікст"
+  }
+}
