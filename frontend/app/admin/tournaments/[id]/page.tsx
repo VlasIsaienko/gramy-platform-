@@ -14,9 +14,11 @@ import {
   olympicRoundLabel,
   nextPowerOfTwo,
   validateMatchScore,
+  bestOf3Winner,
   type TournamentFormat,
   type GroupDistributionMode,
   type OlympicSeedingMode,
+  type ScoringFormat,
 } from "@/lib/bracket";
 
 interface Tournament {
@@ -32,6 +34,7 @@ interface Category {
   name: string;
   match_category: "singles" | "doubles" | "mixed";
   third_place_match: boolean;
+  scoring_format: ScoringFormat;
 }
 
 interface Player {
@@ -70,6 +73,14 @@ interface Match {
   status: string;
 }
 
+interface MatchSet {
+  id: string;
+  match_id: string;
+  set_number: number;
+  team_a_score: number;
+  team_b_score: number;
+}
+
 const FORMAT_LABELS: Record<TournamentFormat, string> = {
   olympic: "Olympic",
   round_robin: "Round Robin",
@@ -93,11 +104,13 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
   const [players, setPlayers] = useState<Player[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
+  const [matchSets, setMatchSets] = useState<MatchSet[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newMatchCategory, setNewMatchCategory] = useState<"singles" | "doubles" | "mixed">("singles");
+  const [newScoringFormat, setNewScoringFormat] = useState<ScoringFormat>("single_set");
   const [savingCategory, setSavingCategory] = useState(false);
 
   const [searchByCategory, setSearchByCategory] = useState<Record<string, string>>({});
@@ -128,20 +141,23 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
   const [olympicManualSlots, setOlympicManualSlots] = useState<Record<string, (string | null)[]>>({});
   const [generatingNextRoundFor, setGeneratingNextRoundFor] = useState<string | null>(null);
 
-  // Черновик счёта матча до сохранения (общий для всех форматов).
+  // Черновик счёта матча до сохранения (single_set — общий для всех форматов сетки).
   const [scoreDraft, setScoreDraft] = useState<Record<string, { a: string; b: string }>>({});
+  // Черновик счёта одного сета для best_of_3, по номеру сета внутри матча.
+  const [setDraft, setSetDraft] = useState<Record<string, { a: string; b: string }>>({});
 
   async function loadAll() {
     setLoading(true);
     setError(null);
 
-    const [tournamentRes, categoriesRes, registrationsRes, playersRes, teamsRes, matchesRes] = await Promise.all([
+    const [tournamentRes, categoriesRes, registrationsRes, playersRes, teamsRes, matchesRes, setsRes] = await Promise.all([
       supabase.from("tournaments").select("id, name, date, max_players, format").eq("id", tournamentId).single(),
-      supabase.from("categories").select("id, name, match_category, third_place_match").eq("tournament_id", tournamentId).order("name"),
+      supabase.from("categories").select("id, name, match_category, third_place_match, scoring_format").eq("tournament_id", tournamentId).order("name"),
       supabase.from("registrations").select("id, category_id, player_id").eq("tournament_id", tournamentId),
       supabase.from("players").select("id, full_name, rating_singles, rating_doubles").order("full_name"),
       supabase.from("teams").select("id, category_id, player_id_1, player_id_2, group_number").eq("tournament_id", tournamentId),
       supabase.from("matches").select("id, category_id, round, group_number, bracket_position, match_type, team_a_id, team_b_id, winner_team_id, score_team_a, score_team_b, status").eq("tournament_id", tournamentId).order("round"),
+      supabase.from("sets").select("id, match_id, set_number, team_a_score, team_b_score").eq("tournament_id", tournamentId).order("set_number"),
     ]);
 
     if (tournamentRes.error) setError("Не удалось загрузить турнир: " + tournamentRes.error.message);
@@ -162,6 +178,9 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     if (matchesRes.error) setError("Не удалось загрузить сетку: " + matchesRes.error.message);
     else setMatches(matchesRes.data || []);
 
+    if (setsRes.error) setError("Не удалось загрузить сеты: " + setsRes.error.message);
+    else setMatchSets(setsRes.data || []);
+
     setLoading(false);
   }
 
@@ -173,12 +192,13 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     setSavingCategory(true);
     setError(null);
     const { error } = await supabase.from("categories").insert([{
-      tournament_id: tournamentId, name: newCategoryName.trim(), match_category: newMatchCategory,
+      tournament_id: tournamentId, name: newCategoryName.trim(), match_category: newMatchCategory, scoring_format: newScoringFormat,
     }]);
     if (error) setError("Не удалось добавить категорию: " + error.message);
     else {
       setNewCategoryName("");
       setNewMatchCategory("singles");
+      setNewScoringFormat("single_set");
       await loadAll();
     }
     setSavingCategory(false);
@@ -595,6 +615,41 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
   }
 
   /**
+   * Сохраняет один сет для best_of_3. Матч завершается сам, как только
+   * кто-то выигрывает 2 сета (третий сет играется только при счёте 1:1) —
+   * winner_team_id/status обновляются в той же операции.
+   */
+  async function handleSaveSet(match: Match, setNumber: number) {
+    setError(null);
+    const draft = setDraft[`${match.id}:${setNumber}`];
+    const scoreA = parseInt(draft?.a ?? "", 10);
+    const scoreB = parseInt(draft?.b ?? "", 10);
+    if (!Number.isFinite(scoreA) || !Number.isFinite(scoreB)) {
+      setError("Введите счёт сета.");
+      return;
+    }
+
+    const result = validateMatchScore(scoreA, scoreB);
+    if (!result.valid) { setError(result.error!); return; }
+
+    const { error: insertError } = await supabase.from("sets").insert([{
+      tournament_id: tournamentId, match_id: match.id, set_number: setNumber, team_a_score: scoreA, team_b_score: scoreB,
+    }]);
+    if (insertError) { setError("Не удалось сохранить сет: " + insertError.message); return; }
+
+    const previousSets = matchSets.filter((s) => s.match_id === match.id).map((s) => ({ scoreA: s.team_a_score, scoreB: s.team_b_score }));
+    const winner = bestOf3Winner([...previousSets, { scoreA, scoreB }]);
+    if (winner) {
+      const winnerId = winner === "A" ? match.team_a_id : match.team_b_id!;
+      const { error: matchError } = await supabase.from("matches").update({ winner_team_id: winnerId, status: "completed" }).eq("id", match.id);
+      if (matchError) { setError("Не удалось завершить матч: " + matchError.message); return; }
+    }
+
+    setSetDraft((prev) => { const next = { ...prev }; delete next[`${match.id}:${setNumber}`]; return next; });
+    await loadAll();
+  }
+
+  /**
    * Строит следующий раунд сетки Olympic из победителей текущего (и, если
    * это был полуфинал и включён матч за 3-е место, — сам этот матч тоже).
    */
@@ -682,6 +737,17 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
             className="border border-black/10 rounded-lg px-4 py-2.5 outline-none focus:border-court bg-white"
           >
             {MATCH_CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-sm text-slateGray mb-1 block">Счёт</label>
+          <select
+            value={newScoringFormat}
+            onChange={(e) => setNewScoringFormat(e.target.value as ScoringFormat)}
+            className="border border-black/10 rounded-lg px-4 py-2.5 outline-none focus:border-court bg-white"
+          >
+            <option value="single_set">Один сет до 15</option>
+            <option value="best_of_3">Best of 3 (до 2 побед)</option>
           </select>
         </div>
         <button
@@ -1055,40 +1121,84 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                                           }
 
                                           if (!isEditingThis) {
+                                            const isBestOf3 = category.scoring_format === "best_of_3";
+                                            const playedSets = isBestOf3
+                                              ? matchSets.filter((s) => s.match_id === m.id).sort((a, b) => a.set_number - b.set_number)
+                                              : [];
+                                            const aSets = playedSets.filter((s) => s.team_a_score > s.team_b_score).length;
+                                            const bSets = playedSets.filter((s) => s.team_b_score > s.team_a_score).length;
+                                            const nextSetNumber = playedSets.length + 1;
+                                            const setDraftKey = `${m.id}:${nextSetNumber}`;
+
                                             return (
-                                              <div key={m.id} className="flex items-center justify-between text-sm bg-courtLine/60 rounded-lg px-3 py-2 flex-wrap gap-y-2">
-                                                <span className={"text-ink " + (isDecided && m.winner_team_id === m.team_a_id ? "font-semibold" : "")}>
-                                                  {teamLabel(m.team_a_id)}{isDecided && m.winner_team_id === m.team_a_id ? " 🏆" : ""}
-                                                </span>
-                                                <span className="text-slateGray text-xs">
-                                                  {isDecided ? `${m.score_team_a} : ${m.score_team_b}` : "vs"}
-                                                </span>
-                                                <span className={"text-ink " + (isDecided && m.winner_team_id === m.team_b_id ? "font-semibold" : "")}>
-                                                  {teamLabel(m.team_b_id)}{isDecided && m.winner_team_id === m.team_b_id ? " 🏆" : ""}
-                                                </span>
-                                                <div className="flex items-center gap-2 ml-3">
-                                                  {!isDecided && (
-                                                    <>
-                                                      <input
-                                                        type="number" min={0} max={16}
-                                                        value={scoreDraft[m.id]?.a ?? ""}
-                                                        onChange={(e) => setScoreDraft((prev) => ({ ...prev, [m.id]: { a: e.target.value, b: prev[m.id]?.b ?? "" } }))}
-                                                        className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
-                                                        placeholder="0"
-                                                      />
-                                                      <span className="text-slateGray text-xs">:</span>
-                                                      <input
-                                                        type="number" min={0} max={16}
-                                                        value={scoreDraft[m.id]?.b ?? ""}
-                                                        onChange={(e) => setScoreDraft((prev) => ({ ...prev, [m.id]: { a: prev[m.id]?.a ?? "", b: e.target.value } }))}
-                                                        className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
-                                                        placeholder="0"
-                                                      />
-                                                      <button onClick={() => handleSaveScore(m)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">Сохранить результат</button>
+                                              <div key={m.id} className="flex flex-col gap-1.5 bg-courtLine/60 rounded-lg px-3 py-2">
+                                                <div className="flex items-center justify-between flex-wrap gap-y-2">
+                                                  <span className={"text-ink " + (isDecided && m.winner_team_id === m.team_a_id ? "font-semibold" : "")}>
+                                                    {teamLabel(m.team_a_id)}{isDecided && m.winner_team_id === m.team_a_id ? " 🏆" : ""}
+                                                  </span>
+                                                  <span className="text-slateGray text-xs">
+                                                    {isBestOf3
+                                                      ? (playedSets.length > 0 ? `${aSets} : ${bSets}` : "vs")
+                                                      : (isDecided ? `${m.score_team_a} : ${m.score_team_b}` : "vs")}
+                                                  </span>
+                                                  <span className={"text-ink " + (isDecided && m.winner_team_id === m.team_b_id ? "font-semibold" : "")}>
+                                                    {teamLabel(m.team_b_id)}{isDecided && m.winner_team_id === m.team_b_id ? " 🏆" : ""}
+                                                  </span>
+                                                  <div className="flex items-center gap-2 ml-3">
+                                                    {!isDecided && !isBestOf3 && (
+                                                      <>
+                                                        <input
+                                                          type="number" min={0} max={16}
+                                                          value={scoreDraft[m.id]?.a ?? ""}
+                                                          onChange={(e) => setScoreDraft((prev) => ({ ...prev, [m.id]: { a: e.target.value, b: prev[m.id]?.b ?? "" } }))}
+                                                          className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
+                                                          placeholder="0"
+                                                        />
+                                                        <span className="text-slateGray text-xs">:</span>
+                                                        <input
+                                                          type="number" min={0} max={16}
+                                                          value={scoreDraft[m.id]?.b ?? ""}
+                                                          onChange={(e) => setScoreDraft((prev) => ({ ...prev, [m.id]: { a: prev[m.id]?.a ?? "", b: e.target.value } }))}
+                                                          className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
+                                                          placeholder="0"
+                                                        />
+                                                        <button onClick={() => handleSaveScore(m)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">Сохранить результат</button>
+                                                      </>
+                                                    )}
+                                                    {!isDecided && (
                                                       <button onClick={() => startEditMatch(m)} className="text-xs text-shuttle hover:text-shuttle/70 transition">Изменить</button>
-                                                    </>
-                                                  )}
+                                                    )}
+                                                  </div>
                                                 </div>
+
+                                                {isBestOf3 && (
+                                                  <div className="flex items-center gap-3 flex-wrap">
+                                                    {playedSets.map((s) => (
+                                                      <span key={s.set_number} className="text-xs text-slateGray">Сет {s.set_number}: {s.team_a_score}:{s.team_b_score}</span>
+                                                    ))}
+                                                    {!isDecided && (
+                                                      <div className="flex items-center gap-1.5">
+                                                        <span className="text-xs text-slateGray">Сет {nextSetNumber}:</span>
+                                                        <input
+                                                          type="number" min={0} max={16}
+                                                          value={setDraft[setDraftKey]?.a ?? ""}
+                                                          onChange={(e) => setSetDraft((prev) => ({ ...prev, [setDraftKey]: { a: e.target.value, b: prev[setDraftKey]?.b ?? "" } }))}
+                                                          className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
+                                                          placeholder="0"
+                                                        />
+                                                        <span className="text-slateGray text-xs">:</span>
+                                                        <input
+                                                          type="number" min={0} max={16}
+                                                          value={setDraft[setDraftKey]?.b ?? ""}
+                                                          onChange={(e) => setSetDraft((prev) => ({ ...prev, [setDraftKey]: { a: prev[setDraftKey]?.a ?? "", b: e.target.value } }))}
+                                                          className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
+                                                          placeholder="0"
+                                                        />
+                                                        <button onClick={() => handleSaveSet(m, nextSetNumber)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">Сохранить сет</button>
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                )}
                                               </div>
                                             );
                                           }
@@ -1126,42 +1236,88 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                                 })}
                               </div>
 
-                              {isOlympicFormat && olympicThirdPlaceMatch && (
-                                <div className="mt-4">
-                                  <p className="text-xs font-medium text-slateGray mb-1.5">Матч за 3-е место</p>
-                                  <div className="flex items-center justify-between text-sm bg-courtLine/60 rounded-lg px-3 py-2 flex-wrap gap-y-2">
-                                    <span className={"text-ink " + (olympicThirdPlaceMatch.winner_team_id === olympicThirdPlaceMatch.team_a_id ? "font-semibold" : "")}>
-                                      {teamLabel(olympicThirdPlaceMatch.team_a_id)}{olympicThirdPlaceMatch.winner_team_id === olympicThirdPlaceMatch.team_a_id ? " 🏆" : ""}
-                                    </span>
-                                    <span className="text-slateGray text-xs">
-                                      {olympicThirdPlaceMatch.winner_team_id ? `${olympicThirdPlaceMatch.score_team_a} : ${olympicThirdPlaceMatch.score_team_b}` : "vs"}
-                                    </span>
-                                    <span className={"text-ink " + (olympicThirdPlaceMatch.winner_team_id === olympicThirdPlaceMatch.team_b_id ? "font-semibold" : "")}>
-                                      {teamLabel(olympicThirdPlaceMatch.team_b_id)}{olympicThirdPlaceMatch.winner_team_id === olympicThirdPlaceMatch.team_b_id ? " 🏆" : ""}
-                                    </span>
-                                    {!olympicThirdPlaceMatch.winner_team_id && (
-                                      <div className="flex items-center gap-2 ml-3">
-                                        <input
-                                          type="number" min={0} max={16}
-                                          value={scoreDraft[olympicThirdPlaceMatch.id]?.a ?? ""}
-                                          onChange={(e) => setScoreDraft((prev) => ({ ...prev, [olympicThirdPlaceMatch.id]: { a: e.target.value, b: prev[olympicThirdPlaceMatch.id]?.b ?? "" } }))}
-                                          className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
-                                          placeholder="0"
-                                        />
-                                        <span className="text-slateGray text-xs">:</span>
-                                        <input
-                                          type="number" min={0} max={16}
-                                          value={scoreDraft[olympicThirdPlaceMatch.id]?.b ?? ""}
-                                          onChange={(e) => setScoreDraft((prev) => ({ ...prev, [olympicThirdPlaceMatch.id]: { a: prev[olympicThirdPlaceMatch.id]?.a ?? "", b: e.target.value } }))}
-                                          className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
-                                          placeholder="0"
-                                        />
-                                        <button onClick={() => handleSaveScore(olympicThirdPlaceMatch)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">Сохранить результат</button>
+                              {isOlympicFormat && olympicThirdPlaceMatch && (() => {
+                                const tpMatch = olympicThirdPlaceMatch;
+                                const isBestOf3 = category.scoring_format === "best_of_3";
+                                const playedSets = isBestOf3
+                                  ? matchSets.filter((s) => s.match_id === tpMatch.id).sort((a, b) => a.set_number - b.set_number)
+                                  : [];
+                                const aSets = playedSets.filter((s) => s.team_a_score > s.team_b_score).length;
+                                const bSets = playedSets.filter((s) => s.team_b_score > s.team_a_score).length;
+                                const nextSetNumber = playedSets.length + 1;
+                                const setDraftKey = `${tpMatch.id}:${nextSetNumber}`;
+                                const isDecided = !!tpMatch.winner_team_id;
+
+                                return (
+                                  <div className="mt-4">
+                                    <p className="text-xs font-medium text-slateGray mb-1.5">Матч за 3-е место</p>
+                                    <div className="flex flex-col gap-1.5 bg-courtLine/60 rounded-lg px-3 py-2">
+                                      <div className="flex items-center justify-between flex-wrap gap-y-2">
+                                        <span className={"text-ink " + (tpMatch.winner_team_id === tpMatch.team_a_id ? "font-semibold" : "")}>
+                                          {teamLabel(tpMatch.team_a_id)}{tpMatch.winner_team_id === tpMatch.team_a_id ? " 🏆" : ""}
+                                        </span>
+                                        <span className="text-slateGray text-xs">
+                                          {isBestOf3
+                                            ? (playedSets.length > 0 ? `${aSets} : ${bSets}` : "vs")
+                                            : (isDecided ? `${tpMatch.score_team_a} : ${tpMatch.score_team_b}` : "vs")}
+                                        </span>
+                                        <span className={"text-ink " + (tpMatch.winner_team_id === tpMatch.team_b_id ? "font-semibold" : "")}>
+                                          {teamLabel(tpMatch.team_b_id)}{tpMatch.winner_team_id === tpMatch.team_b_id ? " 🏆" : ""}
+                                        </span>
+                                        {!isDecided && !isBestOf3 && (
+                                          <div className="flex items-center gap-2 ml-3">
+                                            <input
+                                              type="number" min={0} max={16}
+                                              value={scoreDraft[tpMatch.id]?.a ?? ""}
+                                              onChange={(e) => setScoreDraft((prev) => ({ ...prev, [tpMatch.id]: { a: e.target.value, b: prev[tpMatch.id]?.b ?? "" } }))}
+                                              className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
+                                              placeholder="0"
+                                            />
+                                            <span className="text-slateGray text-xs">:</span>
+                                            <input
+                                              type="number" min={0} max={16}
+                                              value={scoreDraft[tpMatch.id]?.b ?? ""}
+                                              onChange={(e) => setScoreDraft((prev) => ({ ...prev, [tpMatch.id]: { a: prev[tpMatch.id]?.a ?? "", b: e.target.value } }))}
+                                              className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
+                                              placeholder="0"
+                                            />
+                                            <button onClick={() => handleSaveScore(tpMatch)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">Сохранить результат</button>
+                                          </div>
+                                        )}
                                       </div>
-                                    )}
+
+                                      {isBestOf3 && (
+                                        <div className="flex items-center gap-3 flex-wrap">
+                                          {playedSets.map((s) => (
+                                            <span key={s.set_number} className="text-xs text-slateGray">Сет {s.set_number}: {s.team_a_score}:{s.team_b_score}</span>
+                                          ))}
+                                          {!isDecided && (
+                                            <div className="flex items-center gap-1.5">
+                                              <span className="text-xs text-slateGray">Сет {nextSetNumber}:</span>
+                                              <input
+                                                type="number" min={0} max={16}
+                                                value={setDraft[setDraftKey]?.a ?? ""}
+                                                onChange={(e) => setSetDraft((prev) => ({ ...prev, [setDraftKey]: { a: e.target.value, b: prev[setDraftKey]?.b ?? "" } }))}
+                                                className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
+                                                placeholder="0"
+                                              />
+                                              <span className="text-slateGray text-xs">:</span>
+                                              <input
+                                                type="number" min={0} max={16}
+                                                value={setDraft[setDraftKey]?.b ?? ""}
+                                                onChange={(e) => setSetDraft((prev) => ({ ...prev, [setDraftKey]: { a: prev[setDraftKey]?.a ?? "", b: e.target.value } }))}
+                                                className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
+                                                placeholder="0"
+                                              />
+                                              <button onClick={() => handleSaveSet(tpMatch, nextSetNumber)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">Сохранить сет</button>
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
                                   </div>
-                                </div>
-                              )}
+                                );
+                              })()}
 
                               {isOlympicFormat && olympicIsChampionDecided && (
                                 <p className="mt-4 text-sm font-semibold text-court">🏆 Чемпион: {teamLabel(olympicCurrentRoundMatches[0].winner_team_id)}</p>

@@ -422,3 +422,19 @@ export function validateMatchScore(scoreA: number, scoreB: number): MatchScoreRe
 
   return { valid: true, winner: scoreA > scoreB ? "A" : "B" };
 }
+
+export type ScoringFormat = "single_set" | "best_of_3";
+
+/**
+ * Best of 3: побеждает тот, кто первым выиграл 2 сета. Каждый сет по
+ * отдельности уже должен быть валиден по validateMatchScore — эта функция
+ * просто считает победы по уже сыгранным сетам и не решает ничего, пока
+ * побед меньше 2 (третий сет играется только при счёте 1:1).
+ */
+export function bestOf3Winner(setResults: Array<{ scoreA: number; scoreB: number }>): "A" | "B" | null {
+  const aWins = setResults.filter((s) => s.scoreA > s.scoreB).length;
+  const bWins = setResults.filter((s) => s.scoreB > s.scoreA).length;
+  if (aWins >= 2) return "A";
+  if (bWins >= 2) return "B";
+  return null;
+}

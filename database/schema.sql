@@ -44,7 +44,8 @@ create table categories (
   tournament_id uuid references tournaments(id) on delete cascade,
   name text not null,
   match_category text not null check (match_category in ('singles','doubles','mixed')),
-  third_place_match boolean not null default true -- только для формата olympic
+  third_place_match boolean not null default true, -- только для формата olympic
+  scoring_format text not null default 'single_set' check (scoring_format in ('single_set','best_of_3'))
 );
 
 -- Регистрации игроков на турнир/категорию
@@ -97,13 +98,25 @@ create table matches (
   )
 );
 
--- Сеты внутри матча (счёт)
+-- Сеты внутри матча (счёт) — используется для best_of_3; для single_set
+-- итоговый счёт хранится напрямую в matches.score_team_a/score_team_b.
 create table sets (
   id uuid primary key default gen_random_uuid(),
+  tournament_id uuid references tournaments(id) on delete cascade,
   match_id uuid references matches(id) on delete cascade,
   set_number integer not null check (set_number in (1,2,3)),
   team_a_score integer not null,
-  team_b_score integer not null
+  team_b_score integer not null,
+  unique (match_id, set_number),
+  -- То же правило счёта, что и у matches: один сет до 15, потолок 16.
+  check (
+    team_a_score <> team_b_score
+    and greatest(team_a_score, team_b_score) <= 16
+    and (
+      (greatest(team_a_score, team_b_score) = 15 and abs(team_a_score - team_b_score) >= 2)
+      or greatest(team_a_score, team_b_score) = 16
+    )
+  )
 );
 
 -- Текущий рейтинг (агрегат — для быстрого чтения; источник правды — rating_history)
