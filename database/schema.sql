@@ -79,9 +79,22 @@ create table matches (
   team_a_id uuid references teams(id),
   team_b_id uuid references teams(id),
   winner_team_id uuid references teams(id),
+  score_team_a integer,
+  score_team_b integer,
   status text not null default 'pending'
     check (status in ('pending','approved','in_progress','completed','walkover','retired','dq')),
-  created_at timestamp with time zone default now()
+  created_at timestamp with time zone default now(),
+  -- Один сет до 15, перевес ≥2 при 14:14, жёсткий потолок 16 (16:15 тоже завершает матч).
+  check (
+    score_team_a is null or score_team_b is null or (
+      score_team_a <> score_team_b
+      and greatest(score_team_a, score_team_b) <= 16
+      and (
+        (greatest(score_team_a, score_team_b) = 15 and abs(score_team_a - score_team_b) >= 2)
+        or greatest(score_team_a, score_team_b) = 16
+      )
+    )
+  )
 );
 
 -- Сеты внутри матча (счёт)

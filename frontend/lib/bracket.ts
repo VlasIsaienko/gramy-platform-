@@ -386,3 +386,39 @@ export function checkRoundRobinIntegrity(participantIds: string[], matchPairs: M
 
   return Array.from(issues);
 }
+
+// ============================================================
+// Счёт матча — общий для всех форматов (round_robin, groups, olympic,
+// в будущем mexicano/americano). Один сет до 15 очков; при 14:14 нужен
+// перевес в 2 очка, но жёсткий потолок на 16 — 16:15 тоже завершает
+// матч, даже с разницей в 1 очко.
+// ============================================================
+
+export interface MatchScoreResult {
+  valid: boolean;
+  error?: string;
+  winner?: "A" | "B";
+}
+
+/** Допустимые финальные счета: 15:X (X=0..13, перевес ≥2), 16:14, 16:15. */
+export function validateMatchScore(scoreA: number, scoreB: number): MatchScoreResult {
+  if (!Number.isInteger(scoreA) || !Number.isInteger(scoreB) || scoreA < 0 || scoreB < 0) {
+    return { valid: false, error: "Счёт должен быть неотрицательным целым числом." };
+  }
+  if (scoreA === scoreB) {
+    return { valid: false, error: "Счёт не может быть равным — нужен победитель." };
+  }
+
+  const leader = Math.max(scoreA, scoreB);
+  const trailer = Math.min(scoreA, scoreB);
+
+  if (leader > 16) {
+    return { valid: false, error: "Счёт не может превышать 16 очков." };
+  }
+  const isFinished = (leader === 15 && leader - trailer >= 2) || leader === 16;
+  if (!isFinished) {
+    return { valid: false, error: "Незавершённый счёт: игра до 15 (перевес ≥2) либо до потолка 16." };
+  }
+
+  return { valid: true, winner: scoreA > scoreB ? "A" : "B" };
+}
