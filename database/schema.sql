@@ -45,7 +45,8 @@ create table categories (
   name text not null,
   match_category text not null check (match_category in ('singles','doubles','mixed')),
   third_place_match boolean not null default true, -- только для формата olympic
-  scoring_format text not null default 'single_set' check (scoring_format in ('single_set','best_of_3'))
+  scoring_format text not null default 'single_set' check (scoring_format in ('single_set','best_of_3')),
+  total_rounds integer -- только для mexicano/americano: задаётся один раз перед 1-м раундом
 );
 
 -- Регистрации игроков на турнир/категорию

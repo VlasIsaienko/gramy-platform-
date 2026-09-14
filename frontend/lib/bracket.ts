@@ -438,3 +438,82 @@ export function bestOf3Winner(setResults: Array<{ scoreA: number; scoreB: number
   if (bWins >= 2) return "B";
   return null;
 }
+
+// ============================================================
+// Mexicano / Americano — корты по 4 человека (2×2), партнёры меняются
+// каждый раунд. Участник здесь — ИГРОК, а не команда (в отличие от
+// round_robin/groups/olympic, где участник — уже сформированная команда):
+// пары внутри корта формируются заново на каждый раунд.
+// ============================================================
+
+export interface Court<T> {
+  courtNumber: number;
+  teamA: [T, T];
+  teamB: [T, T];
+}
+
+function requireMultipleOfFour(n: number): void {
+  if (n % 4 !== 0) {
+    throw new Error(`Число игроков должно быть кратно 4 для формата Mexicano/Americano, сейчас: ${n}`);
+  }
+}
+
+/** Корт 1 = первые 4 по порядку, корт 2 = следующие 4 и т.д. Внутри корта — 1-й+4-й против 2-го+3-го (баланс силы). */
+function formCourtsFromOrder<T>(orderedPlayers: T[]): Court<T>[] {
+  const courts: Court<T>[] = [];
+  for (let i = 0; i < orderedPlayers.length; i += 4) {
+    const [p1, p2, p3, p4] = orderedPlayers.slice(i, i + 4);
+    courts.push({ courtNumber: i / 4 + 1, teamA: [p1, p4], teamB: [p2, p3] });
+  }
+  return courts;
+}
+
+export type MexicanoSeedingMode = "auto" | "random";
+
+/** Первый раунд Mexicano: посев по рейтингу или случайный, затем разбивка на корты. */
+export function generateMexicanoRound<T>(
+  players: T[],
+  options: { seedingMode: MexicanoSeedingMode; getRating?: (p: T) => number }
+): Court<T>[] {
+  requireMultipleOfFour(players.length);
+  const ordered = options.seedingMode === "random"
+    ? shuffle(players)
+    : [...players].sort((a, b) => (options.getRating?.(b) ?? 0) - (options.getRating?.(a) ?? 0));
+  return formCourtsFromOrder(ordered);
+}
+
+/**
+ * Следующий раунд Mexicano: игроки пересортировываются по накопленным
+ * очкам с начала турнира (по убыванию) и снова разбиваются на корты по 4
+ * той же балансировкой — так "победители играют с победителями".
+ */
+export function generateMexicanoNextRound<T>(players: T[], getCumulativePoints: (p: T) => number): Court<T>[] {
+  requireMultipleOfFour(players.length);
+  const ordered = [...players].sort((a, b) => getCumulativePoints(b) - getCumulativePoints(a));
+  return formCourtsFromOrder(ordered);
+}
+
+/**
+ * Полная сетка Americano на roundCount раундов: фиксирует первого игрока,
+ * вращает остальных (тот же принцип, что и circle method round robin),
+ * группами по 4 внутри каждого раунда — так партнёры/соперники меняются
+ * от раунда к раунду. Не гарантирует математически отсутствие повторов
+ * при большом числе раундов относительно числа игроков — для этого нужна
+ * отдельная комбинаторная схема, что excessive для текущей задачи.
+ */
+export function generateAmericanoSchedule<T>(players: T[], roundCount: number): Court<T>[][] {
+  requireMultipleOfFour(players.length);
+  const rounds: Court<T>[][] = [];
+  let current = [...players];
+
+  for (let r = 0; r < roundCount; r++) {
+    rounds.push(formCourtsFromOrder(current));
+
+    const fixed = current[0];
+    const rest = current.slice(1);
+    rest.unshift(rest.pop() as T);
+    current = [fixed, ...rest];
+  }
+
+  return rounds;
+}

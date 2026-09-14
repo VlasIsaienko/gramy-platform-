@@ -15,10 +15,15 @@ import {
   nextPowerOfTwo,
   validateMatchScore,
   bestOf3Winner,
+  generateMexicanoRound,
+  generateMexicanoNextRound,
+  generateAmericanoSchedule,
+  type Court,
   type TournamentFormat,
   type GroupDistributionMode,
   type OlympicSeedingMode,
   type ScoringFormat,
+  type MexicanoSeedingMode,
 } from "@/lib/bracket";
 
 interface Tournament {
@@ -35,6 +40,7 @@ interface Category {
   match_category: "singles" | "doubles" | "mixed";
   third_place_match: boolean;
   scoring_format: ScoringFormat;
+  total_rounds: number | null;
 }
 
 interface Player {
@@ -146,13 +152,22 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
   // Черновик счёта одного сета для best_of_3, по номеру сета внутри матча.
   const [setDraft, setSetDraft] = useState<Record<string, { a: string; b: string }>>({});
 
+  // Генерация Mexicano/Americano: способ посева 1-го раунда (только Mexicano),
+  // число раундов (вводится один раз, общее для обоих форматов).
+  const [mexicanoSeedingMode, setMexicanoSeedingMode] = useState<Record<string, MexicanoSeedingMode>>({});
+  const [maRoundsInput, setMaRoundsInput] = useState<Record<string, string>>({});
+  const [showLeaderboard, setShowLeaderboard] = useState<Record<string, boolean>>({});
+  // Редактирование матча Mexicano/Americano — на уровне игроков (не команд):
+  // корт формируется заново каждый раунд, готовых "других команд" на выбор нет.
+  const [editMaSelections, setEditMaSelections] = useState<{ a1: string; a2: string; b1: string; b2: string } | null>(null);
+
   async function loadAll() {
     setLoading(true);
     setError(null);
 
     const [tournamentRes, categoriesRes, registrationsRes, playersRes, teamsRes, matchesRes, setsRes] = await Promise.all([
       supabase.from("tournaments").select("id, name, date, max_players, format").eq("id", tournamentId).single(),
-      supabase.from("categories").select("id, name, match_category, third_place_match, scoring_format").eq("tournament_id", tournamentId).order("name"),
+      supabase.from("categories").select("id, name, match_category, third_place_match, scoring_format, total_rounds").eq("tournament_id", tournamentId).order("name"),
       supabase.from("registrations").select("id, category_id, player_id").eq("tournament_id", tournamentId),
       supabase.from("players").select("id, full_name, rating_singles, rating_doubles").order("full_name"),
       supabase.from("teams").select("id, category_id, player_id_1, player_id_2, group_number").eq("tournament_id", tournamentId),
@@ -543,6 +558,50 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
   function cancelEditMatch() {
     setEditingMatchId(null);
     setEditMatchSelections(null);
+    setEditMaSelections(null);
+  }
+
+  /** Редактирование матча Mexicano/Americano — на уровне 4 игроков корта, а не 2 команд. */
+  function startEditMaMatch(match: Match) {
+    const teamA = teams.find((t) => t.id === match.team_a_id);
+    const teamB = teams.find((t) => t.id === match.team_b_id);
+    setEditingMatchId(match.id);
+    setEditMaSelections({
+      a1: teamA?.player_id_1 ?? "", a2: teamA?.player_id_2 ?? "",
+      b1: teamB?.player_id_1 ?? "", b2: teamB?.player_id_2 ?? "",
+    });
+  }
+
+  async function handleUpdateMaMatch(match: Match, a1: string, a2: string, b1: string, b2: string) {
+    setError(null);
+    const four = [a1, a2, b1, b2];
+    if (new Set(four).size !== 4 || four.some((p) => !p)) {
+      setError("Все 4 позиции должны быть заняты разными игроками.");
+      return;
+    }
+
+    const busy = new Set(
+      matches
+        .filter((m) => m.id !== match.id && m.category_id === match.category_id && m.round === match.round)
+        .flatMap((m) => {
+          const ta = teams.find((t) => t.id === m.team_a_id);
+          const tb = teams.find((t) => t.id === m.team_b_id);
+          return [ta?.player_id_1, ta?.player_id_2, tb?.player_id_1, tb?.player_id_2];
+        })
+        .filter((p): p is string => !!p)
+    );
+    if (four.some((p) => busy.has(p))) {
+      setError("Один из выбранных игроков уже играет в этом раунде на другом корте.");
+      return;
+    }
+
+    const { error: errA } = await supabase.from("teams").update({ player_id_1: a1, player_id_2: a2 }).eq("id", match.team_a_id);
+    if (errA) { setError("Не удалось обновить команду А: " + errA.message); return; }
+    const { error: errB } = await supabase.from("teams").update({ player_id_1: b1, player_id_2: b2 }).eq("id", match.team_b_id!);
+    if (errB) { setError("Не удалось обновить команду Б: " + errB.message); return; }
+
+    cancelEditMatch();
+    await loadAll();
   }
 
   /**
@@ -565,20 +624,26 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
       return;
     }
 
-    const groupTeamIds = teams
-      .filter((t) => t.category_id === match.category_id && t.group_number === match.group_number)
-      .map((t) => t.id);
-    const groupMatchPairs = matches
-      .filter((m) => m.category_id === match.category_id && m.group_number === match.group_number)
-      .map((m) => (m.id === match.id
-        ? { round: m.round, teamA: newTeamAId, teamB: newTeamBId }
-        : { round: m.round, teamA: m.team_a_id, teamB: m.team_b_id }));
-    const issues = checkRoundRobinIntegrity(groupTeamIds, groupMatchPairs);
-    if (issues.length > 0) {
-      const proceed = window.confirm(
-        "Внимание: после этого изменения корректность round robin не гарантируется:\n\n" + issues.join("\n") + "\n\nСохранить всё равно?"
-      );
-      if (!proceed) return;
+    // Round-robin-целостность имеет смысл проверять только там, где она
+    // вообще должна выполняться — round_robin/groups (постоянный состав
+    // группы во всех раундах). У olympic/mexicano/americano состав раунда
+    // меняется по определению, и эта проверка там просто выдавала бы шум.
+    if (tournament?.format === "round_robin" || tournament?.format === "groups") {
+      const groupTeamIds = teams
+        .filter((t) => t.category_id === match.category_id && t.group_number === match.group_number)
+        .map((t) => t.id);
+      const groupMatchPairs = matches
+        .filter((m) => m.category_id === match.category_id && m.group_number === match.group_number)
+        .map((m) => (m.id === match.id
+          ? { round: m.round, teamA: newTeamAId, teamB: newTeamBId }
+          : { round: m.round, teamA: m.team_a_id, teamB: m.team_b_id }));
+      const issues = checkRoundRobinIntegrity(groupTeamIds, groupMatchPairs);
+      if (issues.length > 0) {
+        const proceed = window.confirm(
+          "Внимание: после этого изменения корректность round robin не гарантируется:\n\n" + issues.join("\n") + "\n\nСохранить всё равно?"
+        );
+        if (!proceed) return;
+      }
     }
 
     const { error } = await supabase.from("matches").update({ team_a_id: newTeamAId, team_b_id: newTeamBId }).eq("id", match.id);
@@ -698,6 +763,133 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     setGeneratingNextRoundFor(null);
   }
 
+  /**
+   * Накопленные очки игрока с начала турнира в категории — сумма набранных
+   * очков (single_set: score_team_a/b его стороны; best_of_3: сумма очков
+   * по всем сыгранным сетам его стороны) по всем его матчам. Используется
+   * и для пересортировки следующего раунда Mexicano, и для таблицы рейтинга.
+   */
+  function cumulativePointsFor(category: Category, playerId: string): number {
+    const categoryTeamIds = new Set(
+      teams.filter((t) => t.category_id === category.id && (t.player_id_1 === playerId || t.player_id_2 === playerId)).map((t) => t.id)
+    );
+    let points = 0;
+    for (const m of matches) {
+      if (m.category_id !== category.id) continue;
+      const isTeamA = categoryTeamIds.has(m.team_a_id);
+      const isTeamB = m.team_b_id ? categoryTeamIds.has(m.team_b_id) : false;
+      if (!isTeamA && !isTeamB) continue;
+      if (category.scoring_format === "best_of_3") {
+        const sets = matchSets.filter((s) => s.match_id === m.id);
+        points += sets.reduce((sum, s) => sum + (isTeamA ? s.team_a_score : s.team_b_score), 0);
+      } else {
+        points += (isTeamA ? m.score_team_a : m.score_team_b) ?? 0;
+      }
+    }
+    return points;
+  }
+
+  /** Создаёт команды и матчи для одного раунда Mexicano/Americano из уже посчитанных кортов. */
+  async function insertCourtsAsMatches(category: Category, roundNumber: number, courts: Court<string>[]): Promise<string | null> {
+    const teamRows = courts.flatMap((c) => [
+      { tournament_id: tournamentId, category_id: category.id, player_id_1: c.teamA[0], player_id_2: c.teamA[1] },
+      { tournament_id: tournamentId, category_id: category.id, player_id_1: c.teamB[0], player_id_2: c.teamB[1] },
+    ]);
+    const { data: insertedTeams, error: teamsError } = await supabase.from("teams").insert(teamRows).select("id, player_id_1, player_id_2");
+    if (teamsError) return "Не удалось создать команды: " + teamsError.message;
+
+    const findTeamId = (p1: string, p2: string) =>
+      insertedTeams!.find((t) => (t.player_id_1 === p1 && t.player_id_2 === p2) || (t.player_id_1 === p2 && t.player_id_2 === p1))!.id;
+
+    const matchRows = courts.map((c) => ({
+      tournament_id: tournamentId, category_id: category.id, round: roundNumber, group_number: c.courtNumber,
+      match_type: "standard" as const, team_a_id: findTeamId(c.teamA[0], c.teamA[1]), team_b_id: findTeamId(c.teamB[0], c.teamB[1]), status: "pending",
+    }));
+    const { error: matchesError } = await supabase.from("matches").insert(matchRows);
+    if (matchesError) return "Не удалось сохранить матчи: " + matchesError.message;
+    return null;
+  }
+
+  async function handleGenerateMexicanoFirstRound(category: Category) {
+    setError(null);
+    const playerIds = registrations.filter((r) => r.category_id === category.id).map((r) => r.player_id);
+    const totalRounds = parseInt(maRoundsInput[category.id] || "", 10);
+    if (!Number.isFinite(totalRounds) || totalRounds < 1) { setError("Укажите число раундов."); return; }
+
+    setGeneratingCategoryId(category.id);
+    const mode = mexicanoSeedingMode[category.id] ?? "auto";
+
+    let courts;
+    try {
+      courts = generateMexicanoRound(playerIds, { seedingMode: mode, getRating: (pid) => players.find((p) => p.id === pid)?.rating_singles ?? 0 });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось сгенерировать раунд.");
+      setGeneratingCategoryId(null);
+      return;
+    }
+
+    const { error: roundsError } = await supabase.from("categories").update({ total_rounds: totalRounds }).eq("id", category.id);
+    if (roundsError) { setError("Не удалось сохранить число раундов: " + roundsError.message); setGeneratingCategoryId(null); return; }
+
+    const insertError = await insertCourtsAsMatches(category, 1, courts);
+    if (insertError) setError(insertError);
+    else await loadAll();
+
+    setGeneratingCategoryId(null);
+  }
+
+  async function handleGenerateMexicanoNextRound(category: Category) {
+    setError(null);
+    setGeneratingNextRoundFor(category.id);
+
+    const categoryMatchesList = matches.filter((m) => m.category_id === category.id);
+    const maxRound = Math.max(...categoryMatchesList.map((m) => m.round));
+    const currentRoundMatches = categoryMatchesList.filter((m) => m.round === maxRound);
+
+    if (currentRoundMatches.some((m) => !m.winner_team_id) || maxRound >= (category.total_rounds ?? 0)) {
+      setGeneratingNextRoundFor(null);
+      return;
+    }
+
+    const playerIds = registrations.filter((r) => r.category_id === category.id).map((r) => r.player_id);
+    const courts = generateMexicanoNextRound(playerIds, (pid) => cumulativePointsFor(category, pid));
+
+    const insertError = await insertCourtsAsMatches(category, maxRound + 1, courts);
+    if (insertError) setError(insertError);
+    else await loadAll();
+
+    setGeneratingNextRoundFor(null);
+  }
+
+  async function handleGenerateAmericanoSchedule(category: Category) {
+    setError(null);
+    const playerIds = registrations.filter((r) => r.category_id === category.id).map((r) => r.player_id);
+    const totalRounds = parseInt(maRoundsInput[category.id] || "", 10);
+    if (!Number.isFinite(totalRounds) || totalRounds < 1) { setError("Укажите число раундов."); return; }
+
+    setGeneratingCategoryId(category.id);
+
+    let schedule;
+    try {
+      schedule = generateAmericanoSchedule(playerIds, totalRounds);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Не удалось сгенерировать сетку.");
+      setGeneratingCategoryId(null);
+      return;
+    }
+
+    const { error: roundsError } = await supabase.from("categories").update({ total_rounds: totalRounds }).eq("id", category.id);
+    if (roundsError) { setError("Не удалось сохранить число раундов: " + roundsError.message); setGeneratingCategoryId(null); return; }
+
+    for (let i = 0; i < schedule.length; i++) {
+      const insertError = await insertCourtsAsMatches(category, i + 1, schedule[i]);
+      if (insertError) { setError(insertError); setGeneratingCategoryId(null); return; }
+    }
+
+    await loadAll();
+    setGeneratingCategoryId(null);
+  }
+
   if (loading) {
     return <div className="bg-white rounded-xl p-8 text-center text-slateGray shadow-sm">Загрузка...</div>;
   }
@@ -774,7 +966,11 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
               ? players.filter((p) => !registeredPlayerIds.has(p.id) && p.full_name.toLowerCase().includes(search)).slice(0, 8)
               : [];
 
-            const isDoublesLike = category.match_category !== "singles";
+            const usesDynamicPairing = tournament.format === "mexicano" || tournament.format === "americano";
+            // Mexicano/Americano: партнёр меняется каждый раунд, поэтому
+            // регистрация всегда идёт как для singles — по игроку, без
+            // формирования пар при регистрации, независимо от match_category.
+            const isDoublesLike = category.match_category !== "singles" && !usesDynamicPairing;
             const categoryTeams = teams.filter((t) => t.category_id === category.id);
             const pendingTeams = isDoublesLike ? categoryTeams.filter((t) => !t.player_id_2) : [];
             const completeTeams = isDoublesLike ? categoryTeams.filter((t) => t.player_id_2) : [];
@@ -796,6 +992,7 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
             const isLocked = categoryMatches.length > 0;
             const isGroupsFormat = tournament.format === "groups";
             const isOlympicFormat = tournament.format === "olympic";
+            const isMaFormat = usesDynamicPairing;
 
             const olympicThirdPlaceMatch = isOlympicFormat ? categoryMatches.find((m) => m.match_type === "third_place") : undefined;
             const olympicStandardMatches = categoryMatches.filter((m) => m.match_type === "standard");
@@ -1016,6 +1213,205 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
 
                 <div className="mt-5 pt-5 border-t border-black/5">
                   {isLocked ? (
+                    isMaFormat ? (
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-sm font-semibold text-ink">Сетка ({FORMAT_LABELS[tournament.format]})</h3>
+                          <div className="flex items-center gap-3">
+                            <button
+                              onClick={() => setShowLeaderboard((prev) => ({ ...prev, [category.id]: !prev[category.id] }))}
+                              className="text-xs text-shuttle hover:text-shuttle/70 transition"
+                            >
+                              {showLeaderboard[category.id] ? "Скрыть рейтинг" : "Рейтинг"}
+                            </button>
+                            <button onClick={() => handleDeleteBracket(category)} className="text-xs text-shuttle hover:text-shuttle/70 transition">Удалить сетку</button>
+                          </div>
+                        </div>
+
+                        {showLeaderboard[category.id] && (
+                          <div className="mb-4 border border-black/10 rounded-lg overflow-hidden">
+                            {categoryRegistrations
+                              .map((r) => ({ playerId: r.player_id, points: cumulativePointsFor(category, r.player_id) }))
+                              .sort((a, b) => b.points - a.points)
+                              .map((row, i) => (
+                                <div key={row.playerId} className={"flex items-center justify-between px-4 py-2 text-sm " + (i !== categoryRegistrations.length - 1 ? "border-b border-black/5" : "")}>
+                                  <span className="text-ink">{i + 1}. {players.find((p) => p.id === row.playerId)?.full_name || "—"}</span>
+                                  <span className="text-slateGray font-medium">{row.points}</span>
+                                </div>
+                              ))}
+                          </div>
+                        )}
+
+                        {(() => {
+                          const maRoundNumbers = Array.from(new Set(categoryMatches.map((m) => m.round))).sort((a, b) => a - b);
+                          const totalRounds = category.total_rounds ?? maRoundNumbers.length;
+                          const maxRound = maRoundNumbers.length > 0 ? Math.max(...maRoundNumbers) : 0;
+                          const currentRoundMatches = categoryMatches.filter((m) => m.round === maxRound);
+                          const currentRoundDecided = currentRoundMatches.length > 0 && currentRoundMatches.every((m) => m.winner_team_id);
+                          const isMexicano = tournament.format === "mexicano";
+                          const categoryPlayerIds = registrations.filter((r) => r.category_id === category.id).map((r) => r.player_id);
+
+                          return (
+                            <div className="space-y-5">
+                              {maRoundNumbers.map((roundNumber) => {
+                                const roundMatches = categoryMatches
+                                  .filter((m) => m.round === roundNumber)
+                                  .sort((a, b) => (a.group_number ?? 0) - (b.group_number ?? 0));
+
+                                return (
+                                  <div key={roundNumber}>
+                                    <p className="text-xs font-medium text-slateGray mb-1.5">Раунд {roundNumber}</p>
+                                    <div className="space-y-1.5">
+                                      {roundMatches.map((m) => {
+                                        const isDecided = !!m.winner_team_id;
+                                        const isEditingThis = editingMatchId === m.id;
+                                        const isBestOf3 = category.scoring_format === "best_of_3";
+                                        const playedSets = isBestOf3
+                                          ? matchSets.filter((s) => s.match_id === m.id).sort((a, b) => a.set_number - b.set_number)
+                                          : [];
+                                        const aSets = playedSets.filter((s) => s.team_a_score > s.team_b_score).length;
+                                        const bSets = playedSets.filter((s) => s.team_b_score > s.team_a_score).length;
+                                        const nextSetNumber = playedSets.length + 1;
+                                        const setDraftKey = `${m.id}:${nextSetNumber}`;
+
+                                        if (isEditingThis) {
+                                          const sel = editMaSelections!;
+                                          const busyElsewhere = new Set(
+                                            categoryMatches
+                                              .filter((other) => other.id !== m.id && other.round === m.round)
+                                              .flatMap((other) => {
+                                                const ta = teams.find((t) => t.id === other.team_a_id);
+                                                const tb = teams.find((t) => t.id === other.team_b_id);
+                                                return [ta?.player_id_1, ta?.player_id_2, tb?.player_id_1, tb?.player_id_2];
+                                              })
+                                              .filter((p): p is string => !!p)
+                                          );
+                                          const chosen = new Set([sel.a1, sel.a2, sel.b1, sel.b2].filter(Boolean));
+                                          const candidatesFor = (current: string) =>
+                                            categoryPlayerIds.filter((pid) => pid === current || (!busyElsewhere.has(pid) && !chosen.has(pid)));
+
+                                          return (
+                                            <div key={m.id} className="bg-white border border-black/10 rounded-lg px-3 py-2 space-y-2">
+                                              <div className="flex items-center gap-2 flex-wrap">
+                                                <select value={sel.a1} onChange={(e) => setEditMaSelections({ ...sel, a1: e.target.value })} className="text-xs border border-black/10 rounded px-2 py-1 bg-white outline-none">
+                                                  {candidatesFor(sel.a1).map((pid) => <option key={pid} value={pid}>{players.find((p) => p.id === pid)?.full_name}</option>)}
+                                                </select>
+                                                <span className="text-xs text-slateGray">+</span>
+                                                <select value={sel.a2} onChange={(e) => setEditMaSelections({ ...sel, a2: e.target.value })} className="text-xs border border-black/10 rounded px-2 py-1 bg-white outline-none">
+                                                  {candidatesFor(sel.a2).map((pid) => <option key={pid} value={pid}>{players.find((p) => p.id === pid)?.full_name}</option>)}
+                                                </select>
+                                                <span className="text-xs text-slateGray">vs</span>
+                                                <select value={sel.b1} onChange={(e) => setEditMaSelections({ ...sel, b1: e.target.value })} className="text-xs border border-black/10 rounded px-2 py-1 bg-white outline-none">
+                                                  {candidatesFor(sel.b1).map((pid) => <option key={pid} value={pid}>{players.find((p) => p.id === pid)?.full_name}</option>)}
+                                                </select>
+                                                <span className="text-xs text-slateGray">+</span>
+                                                <select value={sel.b2} onChange={(e) => setEditMaSelections({ ...sel, b2: e.target.value })} className="text-xs border border-black/10 rounded px-2 py-1 bg-white outline-none">
+                                                  {candidatesFor(sel.b2).map((pid) => <option key={pid} value={pid}>{players.find((p) => p.id === pid)?.full_name}</option>)}
+                                                </select>
+                                              </div>
+                                              <div className="flex items-center gap-2">
+                                                <button onClick={() => handleUpdateMaMatch(m, sel.a1, sel.a2, sel.b1, sel.b2)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">Сохранить</button>
+                                                <button onClick={cancelEditMatch} className="text-xs text-slateGray hover:text-shuttle transition">Отмена</button>
+                                              </div>
+                                            </div>
+                                          );
+                                        }
+
+                                        return (
+                                          <div key={m.id} className="flex flex-col gap-1.5 bg-courtLine/60 rounded-lg px-3 py-2">
+                                            <div className="flex items-center justify-between flex-wrap gap-y-2">
+                                              <span className="text-xs text-slateGray w-16 shrink-0">Корт {m.group_number}</span>
+                                              <span className={"text-ink text-sm " + (isDecided && m.winner_team_id === m.team_a_id ? "font-semibold" : "")}>
+                                                {teamLabel(m.team_a_id)}{isDecided && m.winner_team_id === m.team_a_id ? " 🏆" : ""}
+                                              </span>
+                                              <span className="text-slateGray text-xs">
+                                                {isBestOf3
+                                                  ? (playedSets.length > 0 ? `${aSets} : ${bSets}` : "vs")
+                                                  : (isDecided ? `${m.score_team_a} : ${m.score_team_b}` : "vs")}
+                                              </span>
+                                              <span className={"text-ink text-sm " + (isDecided && m.winner_team_id === m.team_b_id ? "font-semibold" : "")}>
+                                                {teamLabel(m.team_b_id)}{isDecided && m.winner_team_id === m.team_b_id ? " 🏆" : ""}
+                                              </span>
+                                              <div className="flex items-center gap-2 ml-3">
+                                                {!isDecided && !isBestOf3 && (
+                                                  <>
+                                                    <input
+                                                      type="number" min={0} max={16}
+                                                      value={scoreDraft[m.id]?.a ?? ""}
+                                                      onChange={(e) => setScoreDraft((prev) => ({ ...prev, [m.id]: { a: e.target.value, b: prev[m.id]?.b ?? "" } }))}
+                                                      className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
+                                                      placeholder="0"
+                                                    />
+                                                    <span className="text-slateGray text-xs">:</span>
+                                                    <input
+                                                      type="number" min={0} max={16}
+                                                      value={scoreDraft[m.id]?.b ?? ""}
+                                                      onChange={(e) => setScoreDraft((prev) => ({ ...prev, [m.id]: { a: prev[m.id]?.a ?? "", b: e.target.value } }))}
+                                                      className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
+                                                      placeholder="0"
+                                                    />
+                                                    <button onClick={() => handleSaveScore(m)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">Сохранить результат</button>
+                                                  </>
+                                                )}
+                                                {!isDecided && (
+                                                  <button onClick={() => startEditMaMatch(m)} className="text-xs text-shuttle hover:text-shuttle/70 transition">Изменить</button>
+                                                )}
+                                              </div>
+                                            </div>
+
+                                            {isBestOf3 && (
+                                              <div className="flex items-center gap-3 flex-wrap">
+                                                {playedSets.map((s) => (
+                                                  <span key={s.set_number} className="text-xs text-slateGray">Сет {s.set_number}: {s.team_a_score}:{s.team_b_score}</span>
+                                                ))}
+                                                {!isDecided && (
+                                                  <div className="flex items-center gap-1.5">
+                                                    <span className="text-xs text-slateGray">Сет {nextSetNumber}:</span>
+                                                    <input
+                                                      type="number" min={0} max={16}
+                                                      value={setDraft[setDraftKey]?.a ?? ""}
+                                                      onChange={(e) => setSetDraft((prev) => ({ ...prev, [setDraftKey]: { a: e.target.value, b: prev[setDraftKey]?.b ?? "" } }))}
+                                                      className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
+                                                      placeholder="0"
+                                                    />
+                                                    <span className="text-slateGray text-xs">:</span>
+                                                    <input
+                                                      type="number" min={0} max={16}
+                                                      value={setDraft[setDraftKey]?.b ?? ""}
+                                                      onChange={(e) => setSetDraft((prev) => ({ ...prev, [setDraftKey]: { a: prev[setDraftKey]?.a ?? "", b: e.target.value } }))}
+                                                      className="w-12 border border-black/10 rounded px-1.5 py-1 text-xs text-center outline-none focus:border-court"
+                                                      placeholder="0"
+                                                    />
+                                                    <button onClick={() => handleSaveSet(m, nextSetNumber)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">Сохранить сет</button>
+                                                  </div>
+                                                )}
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+
+                              {isMexicano && currentRoundDecided && maxRound < totalRounds && (
+                                <button
+                                  onClick={() => handleGenerateMexicanoNextRound(category)}
+                                  disabled={generatingNextRoundFor === category.id}
+                                  className="px-5 py-2.5 rounded-xl bg-court text-white font-semibold hover:bg-court/90 transition disabled:opacity-50"
+                                >
+                                  {generatingNextRoundFor === category.id ? "Генерирую..." : `Сгенерировать раунд ${maxRound + 1}`}
+                                </button>
+                              )}
+                              {maxRound >= totalRounds && currentRoundDecided && (
+                                <p className="text-sm font-semibold text-court">Турнир завершён — см. рейтинг выше.</p>
+                              )}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    ) : (
                     <div>
                       <div className="flex items-center justify-between mb-3">
                         <h3 className="text-sm font-semibold text-ink">Сетка ({FORMAT_LABELS[tournament.format]})</h3>
@@ -1337,8 +1733,63 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                         })}
                       </div>
                     </div>
+                    )
                   ) : hasPending ? (
                     <p className="text-xs text-shuttle">Не все игроки распределены по парам.</p>
+                  ) : isMaFormat ? (
+                    participantCount < 4 || participantCount % 4 !== 0 ? (
+                      <p className="text-xs text-shuttle">
+                        Число игроков должно быть кратно 4 для формата Mexicano/Americano, сейчас: {participantCount}.
+                      </p>
+                    ) : (() => {
+                      const isMexicano = tournament.format === "mexicano";
+                      const mode = mexicanoSeedingMode[category.id] ?? "auto";
+                      const roundsValue = maRoundsInput[category.id] || "";
+                      const roundsValid = /^\d+$/.test(roundsValue) && parseInt(roundsValue, 10) >= 1;
+                      const courtsCount = participantCount / 4;
+
+                      return (
+                        <div>
+                          <div className="mb-4 space-y-3">
+                            {isMexicano && (
+                              <div className="flex gap-4">
+                                {([
+                                  { value: "auto", label: "Авто" },
+                                  { value: "random", label: "Случайно" },
+                                ] as { value: MexicanoSeedingMode; label: string }[]).map((opt) => (
+                                  <label key={opt.value} className="flex items-center gap-1.5 text-sm text-ink cursor-pointer">
+                                    <input
+                                      type="radio"
+                                      name={`mexicano-seeding-${category.id}`}
+                                      checked={mode === opt.value}
+                                      onChange={() => setMexicanoSeedingMode((prev) => ({ ...prev, [category.id]: opt.value }))}
+                                    />
+                                    {opt.label}
+                                  </label>
+                                ))}
+                              </div>
+                            )}
+                            <div>
+                              <label className="text-xs text-slateGray mb-1 block">Число раундов</label>
+                              <input
+                                type="number" min={1}
+                                value={roundsValue}
+                                onChange={(e) => setMaRoundsInput((prev) => ({ ...prev, [category.id]: e.target.value }))}
+                                className="w-24 border border-black/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-court"
+                              />
+                            </div>
+                            <p className="text-xs text-slateGray">{participantCount} игроков → {courtsCount} {courtsCount === 1 ? "корт" : "корта"}</p>
+                          </div>
+                          <button
+                            onClick={() => (isMexicano ? handleGenerateMexicanoFirstRound(category) : handleGenerateAmericanoSchedule(category))}
+                            disabled={generatingCategoryId === category.id || !roundsValid}
+                            className="px-5 py-2.5 rounded-xl bg-court text-white font-semibold hover:bg-court/90 transition disabled:opacity-50"
+                          >
+                            {generatingCategoryId === category.id ? "Генерирую..." : "Сгенерировать сетку"}
+                          </button>
+                        </div>
+                      );
+                    })()
                   ) : participantCount >= 2 ? (
                     (() => {
                       const isGroups = tournament.format === "groups";
