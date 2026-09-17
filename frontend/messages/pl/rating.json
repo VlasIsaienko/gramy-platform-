@@ -1,5 +1,12 @@
 {
   "title": "Ranking",
+  "loading": "Ładowanie...",
+  "loadError": "Nie udało się wczytać rankingu: {message}",
+  "unknownPlayer": "Nieznany zawodnik",
+  "tabs": {
+    "singles": "Gra pojedyncza",
+    "doubles": "Gra podwójna"
+  },
   "stubMessage": "Ogólny ranking klubu pojawi się tutaj po zakończeniu pierwszego turnieju.",
   "stubNote": "(Wersja robocza. Liczony na podstawie tabel <code>ratings</code> i <code>rating_history</code>, funkcjami z <code>lib/elo.ts</code>.)"
 }

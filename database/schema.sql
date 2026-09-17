@@ -120,6 +120,19 @@ create table sets (
   )
 );
 
+-- Закрытие раунда организатором для Olympic/Mexicano/Americano (единственных
+-- форматов с пораундовой генерацией) — блокирует "Сгенерировать следующий
+-- раунд" до явного подтверждения, что раунд полностью доигран и его больше
+-- не будут править.
+create table round_closures (
+  id uuid primary key default gen_random_uuid(),
+  tournament_id uuid references tournaments(id) on delete cascade,
+  category_id uuid references categories(id) on delete cascade,
+  round integer not null,
+  closed_at timestamp with time zone default now(),
+  unique (category_id, round)
+);
+
 -- Текущий рейтинг (агрегат — для быстрого чтения; источник правды — rating_history)
 create table ratings (
   id uuid primary key default gen_random_uuid(),

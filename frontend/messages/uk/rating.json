@@ -1,5 +1,12 @@
 {
   "title": "Рейтинг",
+  "loading": "Завантаження...",
+  "loadError": "Не вдалося завантажити рейтинг: {message}",
+  "unknownPlayer": "Невідомий гравець",
+  "tabs": {
+    "singles": "Одиночний",
+    "doubles": "Парний"
+  },
   "stubMessage": "Загальний рейтинг клубу з'явиться тут після завершення першого турніру.",
   "stubNote": "(Заготовка. Рахується за таблицями <code>ratings</code> і <code>rating_history</code>, за допомогою функцій з <code>lib/elo.ts</code>.)"
 }

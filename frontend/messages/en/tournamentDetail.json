@@ -55,10 +55,16 @@
   "thirdPlaceMatch": "3rd place match",
   "champion": "🏆 Champion: {name}",
   "notAllPaired": "Not all players have been paired up.",
+  "approveRoundButton": "Approve round",
+  "closeRoundButton": "Close round",
+  "finishTournamentButton": "Finish tournament",
+  "finishingTournament": "Finishing...",
+  "tournamentStatusFinished": "Tournament finished",
   "confirm": {
     "deleteBracket": "Delete this category's bracket? All matches in this category will be deleted.",
     "roundRobinIntegrityWarning": "Warning: after this change, round robin correctness is not guaranteed:\n\n{issues}\n\nSave anyway?",
-    "breakExistingPair": "This will break up an existing pair. Continue?"
+    "breakExistingPair": "This will break up an existing pair. Continue?",
+    "finishTournament": "Finish the tournament? All categories' brackets will be closed and every participant's rating recalculated. This action cannot be undone."
   },
   "integrityIssues": {
     "selfMatch": "A participant can't play against themselves.",
@@ -106,6 +112,10 @@
     "generateRound": "Failed to generate round: {message}",
     "saveMatches": "Failed to save matches: {message}",
     "saveRoundsCount": "Failed to save round count: {message}",
-    "tournamentNotFound": "Tournament not found."
+    "tournamentNotFound": "Tournament not found.",
+    "approveRound": "Failed to approve round: {message}",
+    "closeRound": "Failed to close round: {message}",
+    "loadRoundClosures": "Failed to load round statuses: {message}",
+    "finishTournament": "Failed to finish tournament: {message}"
   }
 }

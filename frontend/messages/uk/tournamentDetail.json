@@ -55,10 +55,16 @@
   "thirdPlaceMatch": "Матч за 3-тє місце",
   "champion": "🏆 Чемпіон: {name}",
   "notAllPaired": "Не всі гравці розподілені по парах.",
+  "approveRoundButton": "Підтвердити раунд",
+  "closeRoundButton": "Закрити раунд",
+  "finishTournamentButton": "Завершити турнір",
+  "finishingTournament": "Завершую...",
+  "tournamentStatusFinished": "Турнір завершено",
   "confirm": {
     "deleteBracket": "Видалити сітку категорії? Усі матчі цієї категорії буде видалено.",
     "roundRobinIntegrityWarning": "Увага: після цієї зміни коректність round robin не гарантується:\n\n{issues}\n\nЗберегти попри це?",
-    "breakExistingPair": "Це розформує наявну пару. Продовжити?"
+    "breakExistingPair": "Це розформує наявну пару. Продовжити?",
+    "finishTournament": "Завершити турнір? Сітки всіх категорій буде закрито, а рейтинг усіх учасників — перераховано. Цю дію не можна скасувати."
   },
   "integrityIssues": {
     "selfMatch": "Учасник не може грати сам із собою.",
@@ -106,6 +112,10 @@
     "generateRound": "Не вдалося згенерувати раунд: {message}",
     "saveMatches": "Не вдалося зберегти матчі: {message}",
     "saveRoundsCount": "Не вдалося зберегти кількість раундів: {message}",
-    "tournamentNotFound": "Турнір не знайдено."
+    "tournamentNotFound": "Турнір не знайдено.",
+    "approveRound": "Не вдалося підтвердити раунд: {message}",
+    "closeRound": "Не вдалося закрити раунд: {message}",
+    "loadRoundClosures": "Не вдалося завантажити статуси раундів: {message}",
+    "finishTournament": "Не вдалося завершити турнір: {message}"
   }
 }

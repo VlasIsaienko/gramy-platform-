@@ -28,6 +28,7 @@ import {
   type ScoringFormat,
   type MexicanoSeedingMode,
 } from "@/lib/bracket";
+import { calculateSinglesMatch, calculateDoublesMatch, DEFAULT_RATING } from "@/lib/elo";
 
 interface Tournament {
   id: string;
@@ -35,6 +36,7 @@ interface Tournament {
   date: string;
   max_players: number;
   format: TournamentFormat;
+  status: "draft" | "active" | "finished";
 }
 
 interface Category {
@@ -90,6 +92,12 @@ interface MatchSet {
   team_b_score: number;
 }
 
+interface RoundClosure {
+  id: string;
+  category_id: string;
+  round: number;
+}
+
 const MATCH_CATEGORY_VALUES = ["singles", "doubles", "mixed"] as const;
 
 export default function TournamentDetailPage({ params }: { params: { id: string } }) {
@@ -116,8 +124,10 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
   const [teams, setTeams] = useState<Team[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
   const [matchSets, setMatchSets] = useState<MatchSet[]>([]);
+  const [roundClosures, setRoundClosures] = useState<RoundClosure[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [finishingTournament, setFinishingTournament] = useState(false);
 
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newMatchCategory, setNewMatchCategory] = useState<"singles" | "doubles" | "mixed">("singles");
@@ -170,14 +180,15 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     setLoading(true);
     setError(null);
 
-    const [tournamentRes, categoriesRes, registrationsRes, playersRes, teamsRes, matchesRes, setsRes] = await Promise.all([
-      supabase.from("tournaments").select("id, name, date, max_players, format").eq("id", tournamentId).single(),
+    const [tournamentRes, categoriesRes, registrationsRes, playersRes, teamsRes, matchesRes, setsRes, closuresRes] = await Promise.all([
+      supabase.from("tournaments").select("id, name, date, max_players, format, status").eq("id", tournamentId).single(),
       supabase.from("categories").select("id, name, match_category, third_place_match, scoring_format, total_rounds").eq("tournament_id", tournamentId).order("name"),
       supabase.from("registrations").select("id, category_id, player_id").eq("tournament_id", tournamentId),
       supabase.from("players").select("id, full_name, rating_singles, rating_doubles").order("full_name"),
       supabase.from("teams").select("id, category_id, player_id_1, player_id_2, group_number").eq("tournament_id", tournamentId),
       supabase.from("matches").select("id, category_id, round, group_number, bracket_position, match_type, team_a_id, team_b_id, winner_team_id, score_team_a, score_team_b, status").eq("tournament_id", tournamentId).order("round"),
       supabase.from("sets").select("id, match_id, set_number, team_a_score, team_b_score").eq("tournament_id", tournamentId).order("set_number"),
+      supabase.from("round_closures").select("id, category_id, round").eq("tournament_id", tournamentId),
     ]);
 
     if (tournamentRes.error) setError(t("tournamentDetail.errors.loadTournament", { message: tournamentRes.error.message }));
@@ -200,6 +211,9 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
 
     if (setsRes.error) setError(t("tournamentDetail.errors.loadSets", { message: setsRes.error.message }));
     else setMatchSets(setsRes.data || []);
+
+    if (closuresRes.error) setError(t("tournamentDetail.errors.loadRoundClosures", { message: closuresRes.error.message }));
+    else setRoundClosures(closuresRes.data || []);
 
     setLoading(false);
   }
@@ -734,7 +748,7 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     const maxRound = Math.max(...standardMatches.map((m) => m.round));
     const currentRoundMatches = standardMatches.filter((m) => m.round === maxRound);
 
-    if (currentRoundMatches.length < 2 || currentRoundMatches.some((m) => !m.winner_team_id)) {
+    if (currentRoundMatches.length < 2 || currentRoundMatches.some((m) => !m.winner_team_id) || !isRoundClosed(category.id, maxRound)) {
       setGeneratingNextRoundFor(null);
       return;
     }
@@ -854,7 +868,7 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     const maxRound = Math.max(...categoryMatchesList.map((m) => m.round));
     const currentRoundMatches = categoryMatchesList.filter((m) => m.round === maxRound);
 
-    if (currentRoundMatches.some((m) => !m.winner_team_id) || maxRound >= (category.total_rounds ?? 0)) {
+    if (currentRoundMatches.some((m) => !m.winner_team_id) || maxRound >= (category.total_rounds ?? 0) || !isRoundClosed(category.id, maxRound)) {
       setGeneratingNextRoundFor(null);
       return;
     }
@@ -898,6 +912,162 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
     setGeneratingCategoryId(null);
   }
 
+  /**
+   * "Подтвердить раунд" — просто фиксация состава раунда: переводит ещё
+   * не сыгранные матчи раунда из pending в approved, после чего для них
+   * скрывается ручное редактирование участников (счёт вводить можно было
+   * и до этого — approve на это не влияет).
+   */
+  async function handleApproveRound(matchIds: string[]) {
+    if (matchIds.length === 0) return;
+    setError(null);
+    const { error } = await supabase.from("matches").update({ status: "approved" }).in("id", matchIds).eq("status", "pending");
+    if (error) { setError(t("tournamentDetail.errors.approveRound", { message: error.message })); return; }
+    await loadAll();
+  }
+
+  function isRoundClosed(categoryId: string, round: number): boolean {
+    return roundClosures.some((rc) => rc.category_id === categoryId && rc.round === round);
+  }
+
+  /**
+   * "Закрыть раунд" — только для Olympic/Mexicano, где раунды генерируются
+   * по одному. Явное подтверждение организатора, что раунд полностью
+   * доигран и его больше не будут исправлять — только после этого
+   * становится доступна генерация следующего раунда.
+   */
+  async function handleCloseRound(categoryId: string, round: number) {
+    setError(null);
+    const { error } = await supabase.from("round_closures").upsert(
+      { tournament_id: tournamentId, category_id: categoryId, round },
+      { onConflict: "category_id,round" }
+    );
+    if (error) { setError(t("tournamentDetail.errors.closeRound", { message: error.message })); return; }
+    await loadAll();
+  }
+
+  /** Сетка категории полностью доиграна — используется для готовности "Завершить турнир". */
+  function isCategoryComplete(category: Category): boolean {
+    const categoryMatchesList = matches.filter((m) => m.category_id === category.id);
+    if (categoryMatchesList.length === 0) return false;
+    const standardMatches = categoryMatchesList.filter((m) => m.match_type === "standard");
+
+    if (tournament?.format === "olympic") {
+      const maxRound = Math.max(...standardMatches.map((m) => m.round));
+      const finalRoundMatches = standardMatches.filter((m) => m.round === maxRound);
+      const championDecided = finalRoundMatches.length === 1 && !!finalRoundMatches[0].winner_team_id;
+      const thirdPlace = categoryMatchesList.find((m) => m.match_type === "third_place");
+      return championDecided && (!thirdPlace || !!thirdPlace.winner_team_id);
+    }
+
+    if (tournament?.format === "mexicano" || tournament?.format === "americano") {
+      const maxRound = Math.max(...standardMatches.map((m) => m.round));
+      const currentRoundMatches = standardMatches.filter((m) => m.round === maxRound);
+      return maxRound >= (category.total_rounds ?? 0) && currentRoundMatches.every((m) => m.winner_team_id);
+    }
+
+    return standardMatches.every((m) => m.winner_team_id);
+  }
+
+  /**
+   * "Завершить турнир" — доступно, когда сетки всех категорий полностью
+   * доиграны. Помечает турнир finished и одним проходом пересчитывает
+   * рейтинг каждого игрока по всем сыгранным матчам турнира (индивидуально
+   * даже для парных матчей — см. lib/elo.ts).
+   */
+  async function handleFinishTournament() {
+    if (!tournament || categories.length === 0 || !categories.every(isCategoryComplete)) return;
+    if (!window.confirm(t("tournamentDetail.confirm.finishTournament"))) return;
+
+    setError(null);
+    setFinishingTournament(true);
+
+    const categoryById = new Map(categories.map((c) => [c.id, c]));
+    const decidedMatches = matches
+      .filter((m) => m.winner_team_id && m.team_a_id && m.team_b_id && categoryById.has(m.category_id))
+      .sort((a, b) => a.round - b.round);
+
+    const playerIds = new Set<string>();
+    decidedMatches.forEach((m) => {
+      const teamA = teams.find((t) => t.id === m.team_a_id);
+      const teamB = teams.find((t) => t.id === m.team_b_id);
+      [teamA?.player_id_1, teamA?.player_id_2, teamB?.player_id_1, teamB?.player_id_2].forEach((pid) => { if (pid) playerIds.add(pid); });
+    });
+
+    const { data: existingRatings, error: ratingsLoadError } = await supabase
+      .from("ratings").select("player_id, rating_singles, rating_doubles").in("player_id", Array.from(playerIds));
+    if (ratingsLoadError) { setError(t("tournamentDetail.errors.finishTournament", { message: ratingsLoadError.message })); setFinishingTournament(false); return; }
+
+    const ratingMap = new Map<string, { singles: number; doubles: number }>();
+    playerIds.forEach((pid) => {
+      const existing = existingRatings?.find((r) => r.player_id === pid);
+      const player = players.find((p) => p.id === pid);
+      ratingMap.set(pid, {
+        singles: existing?.rating_singles ?? player?.rating_singles ?? DEFAULT_RATING,
+        doubles: existing?.rating_doubles ?? player?.rating_doubles ?? DEFAULT_RATING,
+      });
+    });
+
+    const historyRows: { player_id: string; tournament_id: string; match_category: string; old_rating: number; new_rating: number; delta: number }[] = [];
+
+    for (const m of decidedMatches) {
+      const category = categoryById.get(m.category_id)!;
+      const teamA = teams.find((t) => t.id === m.team_a_id);
+      const teamB = teams.find((t) => t.id === m.team_b_id);
+      if (!teamA || !teamB) continue;
+      const winnerIsA = m.winner_team_id === teamA.id;
+      const winnerTeam = winnerIsA ? teamA : teamB;
+      const loserTeam = winnerIsA ? teamB : teamA;
+
+      if (category.match_category === "singles") {
+        const w = winnerTeam.player_id_1, l = loserTeam.player_id_1;
+        const result = calculateSinglesMatch(ratingMap.get(w)!.singles, ratingMap.get(l)!.singles);
+        ratingMap.get(w)!.singles = result.winner.newRating;
+        ratingMap.get(l)!.singles = result.loser.newRating;
+        historyRows.push({ player_id: w, tournament_id: tournamentId, match_category: "singles", old_rating: result.winner.oldRating, new_rating: result.winner.newRating, delta: result.winner.delta });
+        historyRows.push({ player_id: l, tournament_id: tournamentId, match_category: "singles", old_rating: result.loser.oldRating, new_rating: result.loser.newRating, delta: result.loser.delta });
+      } else if (winnerTeam.player_id_2 && loserTeam.player_id_2) {
+        const w1 = winnerTeam.player_id_1, w2 = winnerTeam.player_id_2;
+        const l1 = loserTeam.player_id_1, l2 = loserTeam.player_id_2;
+        const result = calculateDoublesMatch(
+          [ratingMap.get(w1)!.doubles, ratingMap.get(w2)!.doubles],
+          [ratingMap.get(l1)!.doubles, ratingMap.get(l2)!.doubles]
+        );
+        ratingMap.get(w1)!.doubles = result.winners[0].newRating;
+        ratingMap.get(w2)!.doubles = result.winners[1].newRating;
+        ratingMap.get(l1)!.doubles = result.losers[0].newRating;
+        ratingMap.get(l2)!.doubles = result.losers[1].newRating;
+        historyRows.push({ player_id: w1, tournament_id: tournamentId, match_category: category.match_category, old_rating: result.winners[0].oldRating, new_rating: result.winners[0].newRating, delta: result.winners[0].delta });
+        historyRows.push({ player_id: w2, tournament_id: tournamentId, match_category: category.match_category, old_rating: result.winners[1].oldRating, new_rating: result.winners[1].newRating, delta: result.winners[1].delta });
+        historyRows.push({ player_id: l1, tournament_id: tournamentId, match_category: category.match_category, old_rating: result.losers[0].oldRating, new_rating: result.losers[0].newRating, delta: result.losers[0].delta });
+        historyRows.push({ player_id: l2, tournament_id: tournamentId, match_category: category.match_category, old_rating: result.losers[1].oldRating, new_rating: result.losers[1].newRating, delta: result.losers[1].delta });
+      }
+    }
+
+    const ratingUpserts = Array.from(ratingMap.entries()).map(([player_id, r]) => ({
+      player_id, rating_singles: r.singles, rating_doubles: r.doubles, updated_at: new Date().toISOString(),
+    }));
+    if (ratingUpserts.length > 0) {
+      const { error: ratingsError } = await supabase.from("ratings").upsert(ratingUpserts, { onConflict: "player_id" });
+      if (ratingsError) { setError(t("tournamentDetail.errors.finishTournament", { message: ratingsError.message })); setFinishingTournament(false); return; }
+
+      await Promise.all(Array.from(ratingMap.entries()).map(([player_id, r]) =>
+        supabase.from("players").update({ rating_singles: r.singles, rating_doubles: r.doubles }).eq("id", player_id)
+      ));
+    }
+
+    if (historyRows.length > 0) {
+      const { error: historyError } = await supabase.from("rating_history").insert(historyRows);
+      if (historyError) { setError(t("tournamentDetail.errors.finishTournament", { message: historyError.message })); setFinishingTournament(false); return; }
+    }
+
+    const { error: statusError } = await supabase.from("tournaments").update({ status: "finished" }).eq("id", tournamentId);
+    if (statusError) { setError(t("tournamentDetail.errors.finishTournament", { message: statusError.message })); setFinishingTournament(false); return; }
+
+    await loadAll();
+    setFinishingTournament(false);
+  }
+
   if (loading) {
     return <div className="bg-white rounded-xl p-8 text-center text-slateGray shadow-sm">{t("common.actions.loading")}</div>;
   }
@@ -914,6 +1084,19 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
           <h1 className="text-3xl font-display font-bold text-court">{tournament.name}</h1>
           <p className="text-slateGray text-sm mt-1">{t("tournamentDetail.dateAndCapacity", { date: tournament.date, max: tournament.max_players })}</p>
         </div>
+        {tournament.status === "finished" ? (
+          <span className="text-sm font-semibold text-court">{t("tournamentDetail.tournamentStatusFinished")}</span>
+        ) : (
+          categories.length > 0 && categories.every(isCategoryComplete) && (
+            <button
+              onClick={handleFinishTournament}
+              disabled={finishingTournament}
+              className="px-5 py-2.5 rounded-xl bg-court text-white font-semibold hover:bg-court/90 transition disabled:opacity-50"
+            >
+              {finishingTournament ? t("tournamentDetail.finishingTournament") : t("tournamentDetail.finishTournamentButton")}
+            </button>
+          )
+        )}
       </div>
 
       {error && <div className="bg-red-50 text-red-700 rounded-lg px-4 py-3 mb-4 text-sm">{error}</div>}
@@ -1266,9 +1449,21 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                                   .filter((m) => m.round === roundNumber)
                                   .sort((a, b) => (a.group_number ?? 0) - (b.group_number ?? 0));
 
+                                const roundPending = roundMatches.filter((m) => m.status === "pending");
+
                                 return (
                                   <div key={roundNumber}>
-                                    <p className="text-xs font-medium text-slateGray mb-1.5">{t("tournamentDetail.roundLabel", { round: roundNumber })}</p>
+                                    <div className="flex items-center justify-between mb-1.5">
+                                      <p className="text-xs font-medium text-slateGray">{t("tournamentDetail.roundLabel", { round: roundNumber })}</p>
+                                      {roundPending.length > 0 && (
+                                        <button
+                                          onClick={() => handleApproveRound(roundPending.map((m) => m.id))}
+                                          className="text-xs text-shuttle hover:text-shuttle/70 transition"
+                                        >
+                                          {t("tournamentDetail.approveRoundButton")}
+                                        </button>
+                                      )}
+                                    </div>
                                     <div className="space-y-1.5">
                                       {roundMatches.map((m) => {
                                         const isDecided = !!m.winner_team_id;
@@ -1361,7 +1556,7 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                                                     <button onClick={() => handleSaveScore(m)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">{t("bracketDisplay.saveResult")}</button>
                                                   </>
                                                 )}
-                                                {!isDecided && (
+                                                {!isDecided && m.status !== "approved" && (
                                                   <button onClick={() => startEditMaMatch(m)} className="text-xs text-shuttle hover:text-shuttle/70 transition">{t("common.actions.edit")}</button>
                                                 )}
                                               </div>
@@ -1403,7 +1598,15 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                                 );
                               })}
 
-                              {isMexicano && currentRoundDecided && maxRound < totalRounds && (
+                              {isMexicano && currentRoundDecided && maxRound < totalRounds && !isRoundClosed(category.id, maxRound) && (
+                                <button
+                                  onClick={() => handleCloseRound(category.id, maxRound)}
+                                  className="px-5 py-2.5 rounded-xl bg-shuttle text-white font-semibold hover:bg-shuttle/90 transition"
+                                >
+                                  {t("tournamentDetail.closeRoundButton")}
+                                </button>
+                              )}
+                              {isMexicano && currentRoundDecided && maxRound < totalRounds && isRoundClosed(category.id, maxRound) && (
                                 <button
                                   onClick={() => handleGenerateMexicanoNextRound(category)}
                                   disabled={generatingNextRoundFor === category.id}
@@ -1498,11 +1701,23 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                                       ))
                                     : groupTeamIds;
 
+                                  const roundPending = roundMatches.filter((m) => m.status === "pending");
+
                                   return (
                                     <div key={round}>
-                                      <p className="text-xs font-medium text-slateGray mb-1.5">
-                                        {roundLabel(round, isOlympicFormat, olympicTotalRounds)}
-                                      </p>
+                                      <div className="flex items-center justify-between mb-1.5">
+                                        <p className="text-xs font-medium text-slateGray">
+                                          {roundLabel(round, isOlympicFormat, olympicTotalRounds)}
+                                        </p>
+                                        {roundPending.length > 0 && (
+                                          <button
+                                            onClick={() => handleApproveRound(roundPending.map((m) => m.id))}
+                                            className="text-xs text-shuttle hover:text-shuttle/70 transition"
+                                          >
+                                            {t("tournamentDetail.approveRoundButton")}
+                                          </button>
+                                        )}
+                                      </div>
                                       <div className="space-y-1.5">
                                         {roundMatches.map((m) => {
                                           const isBye = isOlympicFormat && m.team_b_id === null;
@@ -1569,7 +1784,7 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                                                         <button onClick={() => handleSaveScore(m)} className="text-xs px-2 py-1 rounded bg-court text-white hover:bg-court/90 transition">{t("bracketDisplay.saveResult")}</button>
                                                       </>
                                                     )}
-                                                    {!isDecided && (
+                                                    {!isDecided && m.status !== "approved" && (
                                                       <button onClick={() => startEditMatch(m)} className="text-xs text-shuttle hover:text-shuttle/70 transition">{t("common.actions.edit")}</button>
                                                     )}
                                                   </div>
@@ -1727,7 +1942,16 @@ export default function TournamentDetailPage({ params }: { params: { id: string 
                                 <p className="mt-4 text-sm font-semibold text-court">{t("tournamentDetail.champion", { name: teamLabel(olympicCurrentRoundMatches[0].winner_team_id) })}</p>
                               )}
 
-                              {isOlympicFormat && !olympicIsChampionDecided && olympicCurrentRoundDecided && olympicCurrentRoundMatches.length > 1 && (
+                              {isOlympicFormat && !olympicIsChampionDecided && olympicCurrentRoundDecided && olympicCurrentRoundMatches.length > 1 && !isRoundClosed(category.id, olympicMaxRound) && (
+                                <button
+                                  onClick={() => handleCloseRound(category.id, olympicMaxRound)}
+                                  className="mt-4 px-5 py-2.5 rounded-xl bg-shuttle text-white font-semibold hover:bg-shuttle/90 transition"
+                                >
+                                  {t("tournamentDetail.closeRoundButton")}
+                                </button>
+                              )}
+
+                              {isOlympicFormat && !olympicIsChampionDecided && olympicCurrentRoundDecided && olympicCurrentRoundMatches.length > 1 && isRoundClosed(category.id, olympicMaxRound) && (
                                 <button
                                   onClick={() => handleGenerateNextOlympicRound(category)}
                                   disabled={generatingNextRoundFor === category.id}

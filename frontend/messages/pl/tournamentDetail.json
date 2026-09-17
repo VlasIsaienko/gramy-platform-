@@ -55,10 +55,16 @@
   "thirdPlaceMatch": "Mecz o 3. miejsce",
   "champion": "🏆 Mistrz: {name}",
   "notAllPaired": "Nie wszyscy zawodnicy są przypisani do par.",
+  "approveRoundButton": "Zatwierdź rundę",
+  "closeRoundButton": "Zamknij rundę",
+  "finishTournamentButton": "Zakończ turniej",
+  "finishingTournament": "Kończenie...",
+  "tournamentStatusFinished": "Turniej zakończony",
   "confirm": {
     "deleteBracket": "Usunąć drabinkę kategorii? Wszystkie mecze tej kategorii zostaną usunięte.",
     "roundRobinIntegrityWarning": "Uwaga: po tej zmianie poprawność round robin nie jest gwarantowana:\n\n{issues}\n\nZapisać mimo to?",
-    "breakExistingPair": "To rozwiąże istniejącą parę. Kontynuować?"
+    "breakExistingPair": "To rozwiąże istniejącą parę. Kontynuować?",
+    "finishTournament": "Zakończyć turniej? Drabinki wszystkich kategorii zostaną zamknięte, a ranking wszystkich uczestników przeliczony. Tej operacji nie można cofnąć."
   },
   "integrityIssues": {
     "selfMatch": "Uczestnik nie może grać sam ze sobą.",
@@ -106,6 +112,10 @@
     "generateRound": "Nie udało się wygenerować rundy: {message}",
     "saveMatches": "Nie udało się zapisać meczów: {message}",
     "saveRoundsCount": "Nie udało się zapisać liczby rund: {message}",
-    "tournamentNotFound": "Nie znaleziono turnieju."
+    "tournamentNotFound": "Nie znaleziono turnieju.",
+    "approveRound": "Nie udało się zatwierdzić rundy: {message}",
+    "closeRound": "Nie udało się zamknąć rundy: {message}",
+    "loadRoundClosures": "Nie udało się wczytać statusów rund: {message}",
+    "finishTournament": "Nie udało się zakończyć turnieju: {message}"
   }
 }
